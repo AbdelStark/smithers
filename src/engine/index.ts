@@ -112,13 +112,6 @@ async function computeTaskStates(
           outputTable: desc.outputTableName,
           label: desc.label ?? null,
         });
-        await eventBus.emitEventWithPersist({
-          type: "ApprovalDenied",
-          runId,
-          nodeId: desc.nodeId,
-          iteration: desc.iteration,
-          timestampMs: nowMs(),
-        });
         continue;
       }
       if (!approval || approval.status !== "approved") {
@@ -140,6 +133,13 @@ async function computeTaskStates(
             iteration: desc.iteration,
             timestampMs: nowMs(),
           });
+          await eventBus.emitEventWithPersist({
+            type: "NodeWaitingApproval",
+            runId,
+            nodeId: desc.nodeId,
+            iteration: desc.iteration,
+            timestampMs: nowMs(),
+          });
         }
         stateMap.set(key, "waiting-approval");
         await adapter.insertNode({
@@ -152,22 +152,8 @@ async function computeTaskStates(
           outputTable: desc.outputTableName,
           label: desc.label ?? null,
         });
-        await eventBus.emitEventWithPersist({
-          type: "NodeWaitingApproval",
-          runId,
-          nodeId: desc.nodeId,
-          iteration: desc.iteration,
-          timestampMs: nowMs(),
-        });
         continue;
       }
-      await eventBus.emitEventWithPersist({
-        type: "ApprovalGranted",
-        runId,
-        nodeId: desc.nodeId,
-        iteration: desc.iteration,
-        timestampMs: nowMs(),
-      });
     }
 
     const attempts = await adapter.listAttempts(runId, desc.nodeId, desc.iteration);
@@ -671,7 +657,7 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
 
       const inProgress = await adapter.listInProgressAttempts(runId);
       const mountedSet = new Set(mountedTaskIds);
-      if (inProgress.some((a: any) => !mountedSet.has(a.nodeId))) {
+      if (inProgress.some((a: any) => !mountedSet.has(`${a.nodeId}::${a.iteration ?? 0}`))) {
         await cancelInProgress(adapter, runId, eventBus);
         continue;
       }
@@ -679,7 +665,7 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
       const { plan, ralphs } = buildPlanTree(xml);
       for (const ralph of ralphs) {
         if (!ralphState.has(ralph.id)) {
-          const iteration = defaultIteration;
+          const iteration = 0;
           ralphState.set(ralph.id, { iteration, done: false });
           await adapter.insertOrUpdateRalph({
             runId,
