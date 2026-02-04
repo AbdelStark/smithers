@@ -20,6 +20,7 @@ export type TaskDescriptor = {
   nodeId: string;
   ordinal: number;
   iteration: number;
+  ralphId?: string;
 
   outputTable: Table;
   outputTableName: string;
@@ -87,6 +88,7 @@ export type SmithersWorkflow<Schema> = {
 export interface SmithersCtx<Schema> {
   runId: string;
   iteration: number;
+  iterations?: Record<string, number>;
   input: Schema extends { input: infer T } ? T : never;
   outputs: OutputAccessor<Schema>;
   output<T extends keyof Schema>(
@@ -99,8 +101,7 @@ export interface SmithersCtx<Schema> {
   ): InferRow<Schema[T]> | undefined;
 }
 
-export type OutputAccessor<Schema> = ((table: Schema[keyof Schema]) => Array<InferRow<Schema[keyof Schema>>>) &
-  Record<string, Array<InferRow<Schema[keyof Schema>>>>;
+export type OutputAccessor<Schema> = ((table: any) => any[]) & Record<string, any[]>;
 
 export type InferRow<TTable> = TTable extends { $inferSelect: infer R } ? R : never;
 
@@ -256,6 +257,7 @@ export type BranchProps = {
 };
 
 export type RalphProps = {
+  id?: string;
   until: boolean;
   maxIterations?: number;
   onMaxReached?: "fail" | "return-last";
