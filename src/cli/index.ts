@@ -130,7 +130,11 @@ async function main() {
     const runId = args["run-id"] ?? "graph";
     const schema = (workflow.db as any)?._?.schema ?? (workflow.db as any)?.schema ?? {};
     const inputTable = schema.input;
-    const inputRow = inputTable ? await loadInput(workflow.db as any, inputTable, runId) : {};
+    const inputRow = args.input
+      ? JSON.parse(args.input)
+      : inputTable
+        ? ((await loadInput(workflow.db as any, inputTable, runId)) ?? {})
+        : {};
     const outputs = await loadOutputs(workflow.db as any, schema, runId);
     const ctx = buildContext({ runId, iteration: 0, input: inputRow, outputs });
     const snap = await renderFrame(workflow, ctx);
