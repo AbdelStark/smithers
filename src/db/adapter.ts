@@ -150,6 +150,32 @@ export class SmithersDb {
     await this.db.insert(smithersEvents).values(row);
   }
 
+  async insertEventWithNextSeq(row: { runId: string; timestampMs: number; type: string; payloadJson: string }) {
+    const client: any = (this.db as any).$client;
+    if (!client || typeof client.exec !== "function" || typeof client.query !== "function") {
+      const lastSeq = (await this.getLastEventSeq(row.runId)) ?? -1;
+      await this.insertEvent({ ...row, seq: lastSeq + 1 });
+      return lastSeq + 1;
+    }
+    try {
+      client.exec("BEGIN IMMEDIATE");
+      const res = client.query("SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM _smithers_events WHERE run_id = ?").get(row.runId);
+      const seq = Number(res?.seq ?? 0);
+      client
+        .query("INSERT INTO _smithers_events (run_id, seq, timestamp_ms, type, payload_json) VALUES (?, ?, ?, ?, ?)")
+        .run(row.runId, seq, row.timestampMs, row.type, row.payloadJson);
+      client.exec("COMMIT");
+      return seq;
+    } catch (err) {
+      try {
+        client.exec("ROLLBACK");
+      } catch {
+        // ignore
+      }
+      throw err;
+    }
+  }
+
   async getLastEventSeq(runId: string) {
     const rows = await this.db
       .select()
