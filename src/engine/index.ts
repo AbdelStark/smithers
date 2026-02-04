@@ -10,6 +10,7 @@ import { canonicalizeXml } from "../utils/xml";
 import { sha256Hex } from "../utils/hash";
 import { nowMs } from "../utils/time";
 import { newRunId } from "../utils/ids";
+import { errorToJson } from "../utils/errors";
 import { buildPlanTree, scheduleTasks, buildStateKey, type TaskState, type TaskStateMap, type RalphStateMap } from "./scheduler";
 import { runWithToolContext } from "../tools/context";
 import { EventBus } from "../events";
@@ -21,7 +22,37 @@ const DEFAULT_MAX_CONCURRENCY = 4;
 const STALE_ATTEMPT_MS = 15 * 60 * 1000;
 
 function resolveSchema(db: any): Record<string, any> {
-  return db?._?.fullSchema ?? db?._?.schema ?? db?.schema ?? {};
+  const candidates = [db?._?.fullSchema, db?._?.schema, db?.schema];
+  let schema: Record<string, any> = {};
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    if ((candidate as any).input) {
+      try {
+        getTableName((candidate as any).input);
+        schema = candidate as Record<string, any>;
+        break;
+      } catch {
+        continue;
+      }
+    } else {
+      schema = candidate as Record<string, any>;
+      break;
+    }
+  }
+  const filtered: Record<string, any> = {};
+  for (const [key, table] of Object.entries(schema)) {
+    if (key.startsWith("_smithers")) continue;
+    if (table && typeof table === "object") {
+      try {
+        const name = getTableName(table as any);
+        if (name.startsWith("_smithers")) continue;
+      } catch {
+        // ignore name lookup issues
+      }
+    }
+    filtered[key] = table;
+  }
+  return filtered;
 }
 
 function getWorkflowNameFromXml(xml: any): string {
@@ -504,7 +535,7 @@ async function executeTask(
     await adapter.updateAttempt(runId, desc.nodeId, desc.iteration, attemptNo, {
       state: "failed",
       finishedAtMs: nowMs(),
-      errorJson: JSON.stringify(err),
+      errorJson: JSON.stringify(errorToJson(err)),
     });
     await adapter.insertNode({
       runId,
@@ -523,7 +554,7 @@ async function executeTask(
       nodeId: desc.nodeId,
       iteration: desc.iteration,
       attempt: attemptNo,
-      error: err,
+      error: errorToJson(err),
       timestampMs: nowMs(),
     });
 
@@ -778,8 +809,8 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
     if (process.env.SMITHERS_DEBUG) {
       console.error("[smithers] runWorkflow error", err);
     }
-    await adapter.updateRun(runId, { status: "failed", finishedAtMs: nowMs(), errorJson: JSON.stringify(err) });
-    await eventBus.emitEventWithPersist({ type: "RunFailed", runId, error: err, timestampMs: nowMs() });
+    await adapter.updateRun(runId, { status: "failed", finishedAtMs: nowMs(), errorJson: JSON.stringify(errorToJson(err)) });
+    await eventBus.emitEventWithPersist({ type: "RunFailed", runId, error: errorToJson(err), timestampMs: nowMs() });
     return { runId, status: "failed" };
   }
 }
