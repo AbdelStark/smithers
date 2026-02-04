@@ -594,7 +594,7 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
       await adapter.insertRun({
         runId,
         workflowName: "workflow",
-        workflowPath: null,
+        workflowPath: opts.workflowPath ?? null,
         status: "running",
         createdAtMs: nowMs(),
         startedAtMs: nowMs(),
@@ -603,7 +603,11 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
         configJson: JSON.stringify({ maxConcurrency: opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY }),
       });
     } else {
-      await adapter.updateRun(runId, { status: "running", startedAtMs: existingRun.startedAtMs ?? nowMs() });
+      await adapter.updateRun(runId, {
+        status: "running",
+        startedAtMs: existingRun.startedAtMs ?? nowMs(),
+        workflowPath: opts.workflowPath ?? existingRun.workflowPath ?? null,
+      });
     }
 
     await eventBus.emitEventWithPersist({ type: "RunStarted", runId, timestampMs: nowMs() });
