@@ -4840,16 +4840,21 @@ async function openSettingsDialog() {
   document.body.appendChild(overlay);
   const firstSelect = overlay.querySelector("#settings-panel-open");
   firstSelect?.focus();
+  const closeOverlay = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", handleKeydown);
+  };
   const handleKeydown = (e) => {
     if (e.key === "Escape") {
-      overlay.remove();
-      document.removeEventListener("keydown", handleKeydown);
+      closeOverlay();
     }
   };
   document.addEventListener("keydown", handleKeydown);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeOverlay();
+  });
   overlay.querySelector("#settings-cancel")?.addEventListener("click", () => {
-    overlay.remove();
-    document.removeEventListener("keydown", handleKeydown);
+    closeOverlay();
   });
   overlay.querySelector("#settings-save")?.addEventListener("click", async () => {
     const openValue = overlay.querySelector("#settings-panel-open").value === "true";
@@ -4880,8 +4885,7 @@ async function openSettingsDialog() {
     }
     state.secretStatus = await rpc.request.getSecretStatus({});
     applySettings(settings);
-    overlay.remove();
-    document.removeEventListener("keydown", handleKeydown);
+    closeOverlay();
   });
   overlay.querySelector("#settings-openai-clear")?.addEventListener("click", async () => {
     await rpc.request.clearSecret({ key: "openai.apiKey" });

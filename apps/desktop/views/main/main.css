@@ -201,15 +201,10 @@ body {
 }
 
 .app {
-  display: grid;
-  grid-template-columns: var(--nav-width) 1fr 0;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  transition: grid-template-columns var(--dur-smooth) var(--ease-spring);
-}
-
-.app.inspector-open {
-  grid-template-columns: var(--nav-width) 1fr var(--inspector-width);
 }
 
 .menubar {
@@ -520,6 +515,10 @@ body {
 }
 
 /* === MAIN CONTENT AREA === */
+.nav-rail {
+  min-width: 0;
+}
+
 .main-content {
   display: flex;
   flex-direction: column;
@@ -595,19 +594,29 @@ body {
 .inspector {
   background: var(--panel);
   border-left: 1px solid var(--border);
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   transform: translateX(16px);
   opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
   transition: transform var(--dur-smooth) var(--ease-spring),
-              opacity var(--dur-normal) var(--ease-out);
+              opacity var(--dur-normal) var(--ease-out),
+              visibility 0s var(--dur-smooth);
 }
 
 .inspector-open .inspector {
   transform: translateX(0);
   opacity: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: auto;
+  visibility: visible;
+  transition: transform var(--dur-smooth) var(--ease-spring),
+              opacity var(--dur-normal) var(--ease-out),
+              visibility 0s 0s;
 }
 
 .inspector__header {

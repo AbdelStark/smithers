@@ -135,8 +135,8 @@ class ChatPanel extends HTMLElement {
           flex-direction: column;
           height: 100%;
           font-family: system-ui, -apple-system, sans-serif;
-          color: var(--text, #1b1a17);
-          background: var(--bg, #faf6ee);
+          color: var(--text, #F5F7FA);
+          background: var(--bg, #0B0D10);
         }
 
         .messages {
@@ -146,7 +146,7 @@ class ChatPanel extends HTMLElement {
           display: flex;
           flex-direction: column;
           gap: 0.75rem;
-          background: var(--bg, #faf6ee);
+          background: var(--bg, #0B0D10);
         }
 
         .message {
@@ -160,27 +160,27 @@ class ChatPanel extends HTMLElement {
 
         .message--user {
           align-self: flex-end;
-          background: var(--text, #1b1a17);
-          color: var(--bg, #faf6ee);
-          border: 1px solid var(--border, #d4c9b5);
+          background: var(--text, #F5F7FA);
+          color: var(--bg, #0B0D10);
+          border: 1px solid var(--border, #1E2736);
           border-radius: 1.125rem 1.125rem 0.25rem 1.125rem;
         }
 
         .message--assistant {
           align-self: flex-start;
-          background: var(--panel, #f5efe3);
-          color: var(--text, #1b1a17);
-          border: 1px solid var(--border, #d4c9b5);
+          background: var(--panel, #10141A);
+          color: var(--text, #F5F7FA);
+          border: 1px solid var(--border, #1E2736);
           border-radius: 1.125rem 1.125rem 1.125rem 0.25rem;
         }
 
         .message--toolResult {
           align-self: flex-start;
-          background: var(--panel-2, #ece4d4);
-          color: var(--muted, #6f675a);
+          background: var(--panel-2, #161C24);
+          color: var(--muted, #8B96A9);
           font-family: ui-monospace, monospace;
           font-size: 0.8125rem;
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
           border-radius: 0.75rem;
         }
 
@@ -192,26 +192,26 @@ class ChatPanel extends HTMLElement {
 
         .message--error {
           background: transparent;
-          color: var(--danger, #b11226);
-          border: 1px solid var(--danger, #b11226);
+          color: var(--danger, #FF3B5C);
+          border: 1px solid var(--danger, #FF3B5C);
           border-radius: 0.75rem;
         }
 
         .message__thinking {
-          color: var(--muted, #6f675a);
+          color: var(--muted, #8B96A9);
           font-style: italic;
           font-size: 0.8125rem;
           margin-bottom: 0.5rem;
         }
 
         .message__tool-call {
-          background: var(--panel-2, #ece4d4);
+          background: var(--panel-2, #161C24);
           padding: 0.5rem;
           border-radius: 0.5rem;
           font-family: ui-monospace, monospace;
           font-size: 0.8125rem;
           margin-top: 0.5rem;
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
         }
 
         .messages:empty::after {
@@ -221,22 +221,22 @@ class ChatPanel extends HTMLElement {
 
         .input-area {
           padding: 0.75rem 1rem 1rem;
-          background: var(--bg, #faf6ee);
+          background: var(--bg, #0B0D10);
           border-top: none;
         }
 
         .input-container {
           display: flex;
           flex-direction: column;
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
           border-radius: 1rem;
-          background: var(--panel, #f5efe3);
+          background: var(--panel, #10141A);
           transition: border-color 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
           overflow: hidden;
         }
 
         .input-container:focus-within {
-          border-color: var(--muted, #6f675a);
+          border-color: var(--muted, #8B96A9);
         }
 
         .input-area textarea {
@@ -250,11 +250,11 @@ class ChatPanel extends HTMLElement {
           max-height: 8rem;
           font-family: inherit;
           background: transparent;
-          color: var(--text, #1b1a17);
+          color: var(--text, #F5F7FA);
         }
 
         .input-area textarea::placeholder {
-          color: var(--muted, #6f675a);
+          color: var(--muted, #8B96A9);
           opacity: 0.5;
         }
 
@@ -275,8 +275,8 @@ class ChatPanel extends HTMLElement {
           height: 2rem;
           padding: 0;
           margin: 0;
-          background: var(--text, #1b1a17);
-          color: var(--bg, #faf6ee);
+          background: var(--text, #F5F7FA);
+          color: var(--bg, #0B0D10);
           border: none;
           border-radius: 50%;
           font-size: 1rem;
@@ -307,7 +307,7 @@ class ChatPanel extends HTMLElement {
           display: inline-block;
           width: 0.5rem;
           height: 0.5rem;
-          background: var(--accent, #f27638);
+          background: var(--accent, #4C7DFF);
           border-radius: 50%;
           animation: champloo-breathe 1.6s ease-in-out infinite;
         }
@@ -318,13 +318,13 @@ class ChatPanel extends HTMLElement {
         }
 
         pre {
-          background: var(--panel-2, #ece4d4);
-          color: var(--text, #1b1a17);
+          background: var(--panel-2, #161C24);
+          color: var(--text, #F5F7FA);
           padding: 0.75rem;
           border-radius: 0.5rem;
           overflow-x: auto;
           font-size: 0.8125rem;
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
         }
 
         code {
@@ -332,7 +332,7 @@ class ChatPanel extends HTMLElement {
         }
 
         .workflow-card {
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
           border-radius: 0.75rem;
           padding: 0.75rem;
           background: var(--panel, #f5f5f5);
@@ -354,16 +354,16 @@ class ChatPanel extends HTMLElement {
 
         .workflow-card__meta {
           font-size: 0.75rem;
-          color: var(--muted, #6f675a);
+          color: var(--muted, #8B96A9);
         }
 
         .workflow-card__status {
           font-size: 0.75rem;
           padding: 0.15rem 0.5rem;
           border-radius: 0.375rem;
-          background: var(--panel-2, #ece4d4);
-          color: var(--text, #1b1a17);
-          border: 1px solid var(--border, #d4c9b5);
+          background: var(--panel-2, #161C24);
+          color: var(--text, #F5F7FA);
+          border: 1px solid var(--border, #1E2736);
           text-transform: uppercase;
           letter-spacing: 0.05em;
         }
@@ -375,9 +375,9 @@ class ChatPanel extends HTMLElement {
         }
 
         .workflow-card__actions button {
-          background: var(--panel-2, #ece4d4);
+          background: var(--panel-2, #161C24);
           color: var(--text, #111);
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
           border-radius: 0.5rem;
           padding: 0.4rem 0.6rem;
           font-size: 0.75rem;
@@ -387,24 +387,24 @@ class ChatPanel extends HTMLElement {
         }
 
         .workflow-card__actions button.primary {
-          background: #f27638;
-          color: #000;
-          border-color: #f27638;
+          background: var(--accent, #4C7DFF);
+          color: var(--white-0, #FFFFFF);
+          border-color: var(--accent, #4C7DFF);
         }
 
         .workflow-card__actions button.danger {
-          background: #b11226;
-          color: #fff;
-          border-color: #b11226;
+          background: var(--danger, #FF3B5C);
+          color: var(--white-0, #FFFFFF);
+          border-color: var(--danger, #FF3B5C);
         }
 
         .workflow-card__approval {
           margin-top: 0.5rem;
           padding: 0.5rem;
           border-radius: 0.5rem;
-          background: var(--panel-2, #ece4d4);
+          background: var(--panel-2, #161C24);
           font-size: 0.75rem;
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
         }
       </style>
 
@@ -3394,32 +3394,31 @@ var state = {
   attempts: new Map,
   toolCalls: new Map,
   activeTab: "graph",
-  sidebarOpen: true,
+  currentView: "chat",
+  inspectorOpen: false,
   logQuery: "",
   logFilters: new Set(["run", "node", "approval", "revert"]),
   graphZoom: 1,
   graphPan: { x: 0, y: 0 },
   secretStatus: { openai: false, anthropic: false }
 };
+function mustGetEl(id) {
+  const el = document.getElementById(id);
+  if (!el)
+    throw new Error(`Missing element #${id}`);
+  return el;
+}
 var appRoot;
 var chatPane;
-var sidebar;
-var sidebarCollapsed;
-var runsTab;
-var workflowsTab;
-var menuDropdown;
-var menuButtons;
+var viewRuns;
+var viewWorkflows;
+var inspectorEl;
+var inspectorBody;
 var toastContainer;
 var workspaceSelect;
 var sessionSelect;
 var newSessionBtn;
-var runWorkflowBtn;
-var toggleSidebarBtn;
-var sidebarOpenBtn;
 var approvalBadge;
-var collapsedRunBtn;
-var collapsedHistoryBtn;
-var tabButtons;
 var contextBar;
 var mentionBox;
 var sessionSyncTimer = null;
@@ -3430,133 +3429,107 @@ function setupUi() {
   appRoot.setAttribute("role", "application");
   appRoot.setAttribute("aria-label", "Smithers Desktop Application");
   appRoot.innerHTML = `
-  <a href="#main-content" class="skip-link">Skip to main content</a>
-  <nav class="menubar" role="menubar" aria-label="Main menu">
-    <button class="menu-item" data-menu="file" role="menuitem" aria-haspopup="true" aria-expanded="false">File</button>
-    <button class="menu-item" data-menu="workflow" role="menuitem" aria-haspopup="true" aria-expanded="false">Workflow</button>
-    <button class="menu-item" data-menu="view" role="menuitem" aria-haspopup="true" aria-expanded="false">View</button>
-    <button class="menu-item" data-menu="settings" role="menuitem" aria-haspopup="true" aria-expanded="false">Settings</button>
-    <button class="menu-item" data-menu="help" role="menuitem" aria-haspopup="true" aria-expanded="false">Help</button>
-    <div class="menubar__spacer" aria-hidden="true"></div>
-    <div class="menubar__title" aria-hidden="true">Smithers</div>
-  </nav>
-  <div id="menu-dropdown" class="menu-dropdown hidden" role="menu" aria-label="Dropdown menu"></div>
-  <header class="toolbar" role="toolbar" aria-label="Main toolbar">
-    <div class="toolbar__left">
-      <h1 class="logo">Smithers</h1>
-      <label for="workspace-select" class="sr-only">Select workspace</label>
-      <select id="workspace-select" class="select" aria-label="Workspace selection"></select>
-      <label for="session-select" class="sr-only">Select chat session</label>
-      <select id="session-select" class="select" aria-label="Chat session selection"></select>
-      <button id="new-session" class="btn btn-ghost" aria-label="Create new chat session">New Session</button>
-    </div>
-    <div class="toolbar__right">
-      <button id="run-workflow" class="btn btn-primary" aria-label="Run a workflow">Run Workflow</button>
-      <button id="toggle-sidebar" class="btn btn-ghost" aria-label="Toggle workflow panel visibility" aria-pressed="true">Workflow Panel</button>
-    </div>
-  </header>
-  <div class="content" role="main" id="main-content">
-    <section id="chat-pane" class="chat-pane" aria-label="Chat conversation"></section>
-    <aside id="sidebar" class="sidebar" aria-label="Workflow sidebar" aria-hidden="false">
-      <div class="sidebar__tabs" role="tablist" aria-label="Sidebar tabs">
-        <button class="tab-btn active" data-tab="runs" role="tab" aria-selected="true" aria-controls="runs-tab" id="tab-runs">Runs</button>
-        <button class="tab-btn" data-tab="workflows" role="tab" aria-selected="false" aria-controls="workflows-tab" id="tab-workflows">Workflows</button>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <nav class="nav-rail" id="nav-rail" role="navigation" aria-label="Main navigation">
+      <div class="nav-rail__logo">
+        <span class="nav-rail__logo-mark">◆</span>
+        <span class="nav-rail__logo-text">Smithers</span>
       </div>
-      <div class="sidebar__body">
-        <div id="runs-tab" class="tab-panel" role="tabpanel" aria-labelledby="tab-runs"></div>
-        <div id="workflows-tab" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-workflows" aria-hidden="true"></div>
+
+      <div class="nav-rail__workspace">
+        <label for="workspace-select" class="sr-only">Select workspace</label>
+        <select id="workspace-select" class="nav-rail__workspace-select" aria-label="Workspace selection"></select>
+      </div>
+
+      <div class="nav-rail__items">
+        <button class="nav-item active" data-nav="chat" aria-label="Chat">
+          <span class="nav-item__icon">\uD83D\uDCAC</span>
+          <span class="nav-item__label">Chat</span>
+        </button>
+        <button class="nav-item" data-nav="runs" aria-label="Runs">
+          <span class="nav-item__icon">▶</span>
+          <span class="nav-item__label">Runs</span>
+          <span class="nav-item__badge hidden" id="approval-badge" role="status" aria-live="polite">0</span>
+        </button>
+        <button class="nav-item" data-nav="workflows" aria-label="Workflows">
+          <span class="nav-item__icon">⚡</span>
+          <span class="nav-item__label">Workflows</span>
+        </button>
+        <button class="nav-item" data-nav="settings" aria-label="Settings">
+          <span class="nav-item__icon">⚙</span>
+          <span class="nav-item__label">Settings</span>
+        </button>
+      </div>
+
+      <div class="nav-rail__footer">
+        <div class="nav-rail__version">v0.1.0</div>
+      </div>
+    </nav>
+
+    <main class="main-content" id="main-content">
+      <div class="view view--chat active" id="view-chat">
+        <header class="chat-header" id="chat-header">
+          <div class="chat-header__title">
+            <label for="session-select" class="sr-only">Select chat session</label>
+            <select id="session-select" class="chat-header__session-select" aria-label="Session"></select>
+            <button id="new-session" class="btn-ghost btn-sm" aria-label="New session">+</button>
+          </div>
+          <div class="chat-header__context" id="context-bar"></div>
+          <div class="chat-header__actions">
+            <button class="btn-ghost btn-sm" id="toggle-inspector" aria-label="Toggle inspector (⌘I)">⌘I</button>
+          </div>
+        </header>
+        <section id="chat-pane" class="chat-pane" aria-label="Chat"></section>
+      </div>
+
+      <div class="view view--runs" id="view-runs"></div>
+      <div class="view view--workflows" id="view-workflows"></div>
+    </main>
+
+    <aside class="inspector" id="inspector" aria-label="Inspector" aria-hidden="true">
+      <div class="inspector__header" id="inspector-header">Inspector</div>
+      <div class="inspector__body" id="inspector-body">
+        <div class="inspector__empty">Select a run to inspect</div>
       </div>
     </aside>
-    <div id="sidebar-collapsed" class="sidebar-collapsed hidden" aria-label="Collapsed sidebar controls">
-      <button id="sidebar-open" class="btn btn-ghost" aria-label="Open workflow sidebar">Runs</button>
-      <div id="approval-badge" class="badge hidden" role="status" aria-live="polite" aria-label="Pending approvals count">0</div>
-      <div class="sidebar-collapsed__actions">
-        <button id="collapsed-run" class="btn btn-primary" aria-label="Run a workflow">Run</button>
-        <button id="collapsed-history" class="btn btn-ghost" aria-label="View run history">History</button>
-      </div>
-    </div>
-  </div>
-  <div id="toast-container" class="toast-container" role="status" aria-live="polite" aria-label="Notifications"></div>
-`;
+
+    <div id="toast-container" class="toast-container" role="status" aria-live="polite" aria-label="Notifications"></div>
+  `;
   document.body.style.margin = "0";
   document.body.style.height = "100vh";
   document.body.appendChild(appRoot);
-  chatPane = document.getElementById("chat-pane");
-  sidebar = document.getElementById("sidebar");
-  sidebarCollapsed = document.getElementById("sidebar-collapsed");
-  runsTab = document.getElementById("runs-tab");
-  workflowsTab = document.getElementById("workflows-tab");
-  menuDropdown = document.getElementById("menu-dropdown");
-  menuButtons = Array.from(appRoot.querySelectorAll(".menu-item"));
-  toastContainer = document.getElementById("toast-container");
-  workspaceSelect = document.getElementById("workspace-select");
-  sessionSelect = document.getElementById("session-select");
-  newSessionBtn = document.getElementById("new-session");
-  runWorkflowBtn = document.getElementById("run-workflow");
-  toggleSidebarBtn = document.getElementById("toggle-sidebar");
-  sidebarOpenBtn = document.getElementById("sidebar-open");
-  approvalBadge = document.getElementById("approval-badge");
-  collapsedRunBtn = document.getElementById("collapsed-run");
-  collapsedHistoryBtn = document.getElementById("collapsed-history");
-  tabButtons = Array.from(appRoot.querySelectorAll(".tab-btn"));
-  contextBar = document.createElement("div");
-  contextBar.className = "context-bar";
-  chatPane.appendChild(contextBar);
+  chatPane = mustGetEl("chat-pane");
+  viewRuns = mustGetEl("view-runs");
+  viewWorkflows = mustGetEl("view-workflows");
+  inspectorEl = mustGetEl("inspector");
+  inspectorBody = mustGetEl("inspector-body");
+  toastContainer = mustGetEl("toast-container");
+  workspaceSelect = mustGetEl("workspace-select");
+  sessionSelect = mustGetEl("session-select");
+  newSessionBtn = mustGetEl("new-session");
+  approvalBadge = mustGetEl("approval-badge");
+  contextBar = mustGetEl("context-bar");
   mentionBox = document.createElement("div");
   mentionBox.className = "mention-box hidden";
   chatPane.appendChild(mentionBox);
-  for (const btn of tabButtons) {
+  appRoot.querySelectorAll(".nav-item[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      tabButtons.forEach((b) => {
-        const isActive = b === btn;
-        b.classList.toggle("active", isActive);
-        b.setAttribute("aria-selected", String(isActive));
-      });
-      if (btn.dataset.tab === "runs") {
-        runsTab.classList.remove("hidden");
-        runsTab.removeAttribute("aria-hidden");
-        workflowsTab.classList.add("hidden");
-        workflowsTab.setAttribute("aria-hidden", "true");
+      const view = btn.dataset.nav;
+      if (view === "settings") {
+        openSettingsDialog();
       } else {
-        runsTab.classList.add("hidden");
-        runsTab.setAttribute("aria-hidden", "true");
-        workflowsTab.classList.remove("hidden");
-        workflowsTab.removeAttribute("aria-hidden");
+        navigateTo(view);
       }
     });
-  }
-  for (const btn of menuButtons) {
-    btn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const key = btn.dataset.menu;
-      if (!key)
-        return;
-      openMenu(key, btn);
-    });
-  }
-  document.addEventListener("click", () => {
-    closeMenu();
+  });
+  mustGetEl("toggle-inspector").addEventListener("click", () => {
+    toggleInspector();
   });
   newSessionBtn.addEventListener("click", async () => {
     const result = await rpc.request.createChatSession({ title: "New Session" });
     await loadSessions();
     await bootstrapSession(result.sessionId);
-  });
-  runWorkflowBtn.addEventListener("click", () => {
-    openRunDialog();
-  });
-  toggleSidebarBtn.addEventListener("click", () => {
-    toggleSidebar();
-  });
-  sidebarOpenBtn.addEventListener("click", () => {
-    toggleSidebar(true);
-  });
-  collapsedRunBtn.addEventListener("click", () => {
-    openRunDialog();
-  });
-  collapsedHistoryBtn.addEventListener("click", () => {
-    switchTab("runs");
-    toggleSidebar(true);
   });
   workspaceSelect.addEventListener("change", () => {
     const value = workspaceSelect.value;
@@ -3581,21 +3554,35 @@ function setupUi() {
   window.addEventListener("keydown", (event) => {
     handleShortcuts(event);
   });
-  window.addEventListener("resize", () => {
-    if (window.innerWidth < 1200) {
-      sidebar.classList.add("sidebar--overlay");
-    } else {
-      sidebar.classList.remove("sidebar--overlay");
-    }
-  });
-  if (window.innerWidth < 1200) {
-    sidebar.classList.add("sidebar--overlay");
-  }
   const debugEl = document.createElement("div");
   debugEl.style.cssText = "position:fixed;top:0;left:0;right:0;background:red;color:white;padding:10px;z-index:99999;font-family:monospace";
   debugEl.id = "debug-banner";
   debugEl.textContent = "DEBUG: Script loaded...";
   document.body.appendChild(debugEl);
+}
+function navigateTo(view) {
+  state.currentView = view;
+  appRoot.querySelectorAll(".nav-item[data-nav]").forEach((el) => {
+    el.classList.toggle("active", el.dataset.nav === view);
+  });
+  document.querySelectorAll(".view").forEach((el) => {
+    const isTarget = el.id === `view-${view}`;
+    el.classList.toggle("active", isTarget);
+  });
+  if (view === "runs")
+    renderRuns();
+  if (view === "workflows")
+    renderWorkflows();
+}
+function toggleInspector(open) {
+  state.inspectorOpen = open ?? !state.inspectorOpen;
+  if (state.inspectorOpen) {
+    appRoot.classList.add("inspector-open");
+    inspectorEl.setAttribute("aria-hidden", "false");
+  } else {
+    appRoot.classList.remove("inspector-open");
+    inspectorEl.setAttribute("aria-hidden", "true");
+  }
 }
 function updateDebug(msg) {
   const el = document.getElementById("debug-banner");
@@ -3653,7 +3640,6 @@ async function bootstrapSession(sessionId) {
   });
   state.agent = agent;
   chatPane.innerHTML = "";
-  chatPane.appendChild(contextBar);
   if (mentionBox && mentionBox.parentElement !== chatPane) {
     chatPane.appendChild(mentionBox);
   }
@@ -3776,14 +3762,13 @@ async function refreshRuns() {
 }
 function renderRuns() {
   const selected = state.selectedRunId;
-  runsTab.innerHTML = `
+  viewRuns.innerHTML = `
     <div class="panel">
       <h3 class="panel__header" id="runs-list-heading">Runs</h3>
       <div class="panel__body" id="runs-list" role="list" aria-labelledby="runs-list-heading"></div>
-      <div id="run-inspector" class="run-inspector" role="region" aria-label="Run details"></div>
     </div>
   `;
-  const list = runsTab.querySelector("#runs-list");
+  const list = viewRuns.querySelector("#runs-list");
   state.runs.forEach((run) => {
     const row = document.createElement("div");
     row.className = `run-row status-${run.status}`;
@@ -3841,13 +3826,13 @@ function renderRuns() {
   }
 }
 function renderWorkflows() {
-  workflowsTab.innerHTML = `
+  viewWorkflows.innerHTML = `
     <div class="panel">
       <div class="panel__header">Workflows</div>
       <div class="panel__body" id="workflow-list"></div>
     </div>
   `;
-  const list = workflowsTab.querySelector("#workflow-list");
+  const list = viewWorkflows.querySelector("#workflow-list");
   if (!state.workflows.length) {
     list.innerHTML = `<div class="empty">No workflows found. Open a workspace to scan for .tsx workflows.</div>`;
     return;
@@ -3870,8 +3855,7 @@ function renderWorkflows() {
 async function focusRun(runId) {
   state.selectedRunId = runId;
   state.contextRunId = runId;
-  state.sidebarOpen = true;
-  sidebar.classList.remove("sidebar--closed");
+  toggleInspector(true);
   renderContextBar();
   const detail = await rpc.request.getRun({ runId });
   state.runDetails.set(runId, detail);
@@ -3902,7 +3886,7 @@ function renderContextBar() {
 }
 async function renderRunInspector() {
   const runId = state.selectedRunId;
-  const container = runsTab.querySelector("#run-inspector");
+  const container = inspectorBody;
   if (!runId || !container)
     return;
   const detail = state.runDetails.get(runId) ?? await rpc.request.getRun({ runId });
@@ -4203,7 +4187,7 @@ function buildGraphSvg(frame) {
     const y1 = from.y + 24;
     const x2 = to.x;
     const y2 = to.y + 24;
-    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#3a3f4b" stroke-width="2" />`;
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#1E2736" stroke-width="2" />`;
   }).join("");
   return `
     <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -4245,10 +4229,7 @@ function handleWorkspaceState(payload) {
 }
 function applySettings(settings) {
   state.settings = settings;
-  state.sidebarOpen = settings.ui.workflowPanel.isOpen;
-  sidebar.style.width = `${settings.ui.workflowPanel.width}px`;
-  sidebar.classList.toggle("sidebar--closed", !state.sidebarOpen);
-  sidebarCollapsed.classList.toggle("hidden", state.sidebarOpen);
+  toggleInspector(settings.ui.workflowPanel.isOpen);
   document.body.classList.toggle("artifacts-hidden", !settings.ui.artifactsPanelOpen);
 }
 function updateWorkspaceSelect() {
@@ -4278,103 +4259,6 @@ function updateApprovalBadge() {
     approvalBadge.classList.add("hidden");
   }
 }
-function switchTab(tab) {
-  tabButtons.forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  if (tab === "runs") {
-    runsTab.classList.remove("hidden");
-    workflowsTab.classList.add("hidden");
-  } else {
-    runsTab.classList.add("hidden");
-    workflowsTab.classList.remove("hidden");
-  }
-}
-function toggleSidebar(open) {
-  state.sidebarOpen = open ?? !state.sidebarOpen;
-  sidebar.classList.toggle("sidebar--closed", !state.sidebarOpen);
-  sidebar.setAttribute("aria-hidden", String(!state.sidebarOpen));
-  sidebarCollapsed.classList.toggle("hidden", state.sidebarOpen);
-  toggleSidebarBtn.setAttribute("aria-pressed", String(state.sidebarOpen));
-  if (state.settings) {
-    state.settings.ui.workflowPanel.isOpen = state.sidebarOpen;
-    rpc.request.setSettings({ patch: { ui: { workflowPanel: { isOpen: state.sidebarOpen } } } });
-  }
-}
-function openMenu(key, anchor) {
-  const items = getMenuItems(key);
-  if (!items.length)
-    return;
-  anchor.setAttribute("aria-expanded", "true");
-  menuDropdown.innerHTML = items.map((item, index) => {
-    if (item.separator) {
-      return `<div class="menu-separator" role="separator"></div>`;
-    }
-    return `
-        <button class="menu-row ${item.disabled ? "disabled" : ""}" data-menu-index="${index}" role="menuitem" ${item.disabled ? 'aria-disabled="true"' : ""}>
-          <span>${escapeHtml(item.label)}</span>
-          <span class="menu-shortcut" aria-hidden="true">${item.shortcut ?? ""}</span>
-        </button>
-      `;
-  }).join("");
-  const rect = anchor.getBoundingClientRect();
-  menuDropdown.style.left = `${rect.left}px`;
-  menuDropdown.style.top = `${rect.bottom + 4}px`;
-  menuDropdown.classList.remove("hidden");
-  menuDropdown.setAttribute("aria-hidden", "false");
-  const firstItem = menuDropdown.querySelector(".menu-row:not(.disabled)");
-  firstItem?.focus();
-  menuDropdown.querySelectorAll(".menu-row").forEach((btn) => {
-    const index = Number(btn.dataset.menuIndex ?? -1);
-    const item = items[index];
-    if (!item || item.disabled || !item.action)
-      return;
-    btn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closeMenu();
-      item.action?.();
-    });
-  });
-}
-function closeMenu() {
-  menuDropdown.classList.add("hidden");
-  menuDropdown.setAttribute("aria-hidden", "true");
-  menuDropdown.innerHTML = "";
-  menuButtons.forEach((btn) => btn.setAttribute("aria-expanded", "false"));
-}
-function getMenuItems(key) {
-  switch (key) {
-    case "file":
-      return [
-        { label: "New Chat Session", shortcut: "⌘N", action: () => newSessionBtn.click() },
-        { label: "Open Workspace…", shortcut: "⌘O", action: () => openWorkspaceDialog() },
-        { label: "Close Workspace", action: () => closeWorkspace(), disabled: !state.workspaceRoot }
-      ];
-    case "workflow":
-      return [
-        { label: "Run Workflow…", shortcut: "⌘R", action: () => openRunDialog() },
-        { label: "Show Runs", shortcut: "⌘⇧R", action: () => switchTab("runs") },
-        { label: "Approvals", shortcut: "⌘⇧A", action: () => focusNextApproval() },
-        { label: "Cancel Current Run", shortcut: "⌘.", action: () => cancelCurrentRun() }
-      ];
-    case "view":
-      return [
-        { label: "Toggle Workflow Panel", shortcut: "⌘\\", action: () => toggleSidebar() },
-        { label: "Toggle Artifacts Panel", shortcut: "⌘⇧\\", action: () => toggleArtifactsPanel() },
-        { separator: true, label: "sep" },
-        { label: "Zoom In (Graph)", shortcut: "⌘=", action: () => adjustGraphZoom(0.1) },
-        { label: "Zoom Out (Graph)", shortcut: "⌘-", action: () => adjustGraphZoom(-0.1) }
-      ];
-    case "settings":
-      return [
-        { label: "Preferences…", shortcut: "⌘,", action: () => void openSettingsDialog() }
-      ];
-    case "help":
-      return [
-        { label: "Docs (smithers.sh)", action: () => pushToast("info", "Open smithers.sh in your browser.") }
-      ];
-    default:
-      return [];
-  }
-}
 function handleShortcuts(event) {
   const meta = event.metaKey || event.ctrlKey;
   if (!meta)
@@ -4397,8 +4281,12 @@ function handleShortcuts(event) {
   }
   if (key.toLowerCase() === "r" && event.shiftKey) {
     event.preventDefault();
-    switchTab("runs");
-    toggleSidebar(true);
+    navigateTo("runs");
+    return;
+  }
+  if (key.toLowerCase() === "i" && !event.shiftKey) {
+    event.preventDefault();
+    toggleInspector();
     return;
   }
   if (key.toLowerCase() === "a" && event.shiftKey) {
@@ -4413,7 +4301,7 @@ function handleShortcuts(event) {
   }
   if (key === "\\" && !event.shiftKey) {
     event.preventDefault();
-    toggleSidebar();
+    toggleInspector();
     return;
   }
   if (key === "\\" && event.shiftKey) {
@@ -4458,9 +4346,6 @@ function toggleArtifactsPanel() {
     rpc.request.setSettings({ patch: { ui: { artifactsPanelOpen: next } } });
   }
   document.body.classList.toggle("artifacts-hidden", !next);
-}
-function closeWorkspace() {
-  rpc.request.openWorkspace({ path: "" }).then(() => loadWorkspaceState());
 }
 function pushToast(level, message) {
   const toast = document.createElement("div");
@@ -4686,18 +4571,18 @@ function formatEvent(event) {
 function stateColor(state2) {
   switch (state2) {
     case "in-progress":
-      return { bg: "#1a1208", stroke: "#f27638" };
+      return { bg: "#0D1530", stroke: "#4C7DFF" };
     case "finished":
-      return { bg: "#0a1a10", stroke: "#2f7d4a" };
+      return { bg: "#0A1F1A", stroke: "#3DDC97" };
     case "failed":
-      return { bg: "#1e0a0a", stroke: "#b11226" };
+      return { bg: "#1E0A12", stroke: "#FF3B5C" };
     case "waiting-approval":
-      return { bg: "#1a1508", stroke: "#efb85d" };
+      return { bg: "#1A1508", stroke: "#F2A43A" };
     case "cancelled":
     case "skipped":
-      return { bg: "#161a1e", stroke: "#6f675a" };
+      return { bg: "#10141A", stroke: "#5A6577" };
     default:
-      return { bg: "#161a1e", stroke: "#4b463c" };
+      return { bg: "#10141A", stroke: "#2C3A4E" };
   }
 }
 function formatTime(ms) {
@@ -4816,13 +4701,13 @@ async function openSettingsDialog() {
   overlay.innerHTML = `
     <div class="modal__dialog">
       <h2 class="modal__header" id="settings-dialog-title">Preferences</h2>
-      <label class="modal__label" for="settings-panel-open">Workflow panel open</label>
-      <select class="select" id="settings-panel-open" aria-label="Workflow panel visibility">
+      <label class="modal__label" for="settings-panel-open">Inspector panel open</label>
+      <select class="select" id="settings-panel-open" aria-label="Inspector panel visibility">
         <option value="true" ${isOpen ? "selected" : ""}>Open</option>
         <option value="false" ${!isOpen ? "selected" : ""}>Closed</option>
       </select>
-      <label class="modal__label" for="settings-panel-width">Workflow panel width</label>
-      <input class="input" id="settings-panel-width" type="number" value="${width}" aria-label="Workflow panel width in pixels" />
+      <label class="modal__label" for="settings-panel-width">Inspector panel width</label>
+      <input class="input" id="settings-panel-width" type="number" value="${width}" aria-label="Inspector panel width in pixels" />
       <div class="modal__section">AI Provider</div>
       <label class="modal__label" for="settings-provider">Provider</label>
       <select class="select" id="settings-provider" aria-label="AI provider">
