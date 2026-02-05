@@ -298,9 +298,9 @@ export class ChatPanel extends HTMLElement {
         }
 
         .workflow-card__actions button {
-          background: var(--panel-2, #ece4d4);
+          background: var(--panel-2, #161C24);
           color: var(--text, #111);
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
           border-radius: 0.5rem;
           padding: 0.4rem 0.6rem;
           font-size: 0.75rem;
@@ -310,24 +310,24 @@ export class ChatPanel extends HTMLElement {
         }
 
         .workflow-card__actions button.primary {
-          background: #f27638;
-          color: #000;
-          border-color: #f27638;
+          background: var(--accent, #4C7DFF);
+          color: var(--white-0, #FFFFFF);
+          border-color: var(--accent, #4C7DFF);
         }
 
         .workflow-card__actions button.danger {
-          background: #b11226;
-          color: #fff;
-          border-color: #b11226;
+          background: var(--danger, #FF3B5C);
+          color: var(--white-0, #FFFFFF);
+          border-color: var(--danger, #FF3B5C);
         }
 
         .workflow-card__approval {
           margin-top: 0.5rem;
           padding: 0.5rem;
           border-radius: 0.5rem;
-          background: var(--panel-2, #ece4d4);
+          background: var(--panel-2, #161C24);
           font-size: 0.75rem;
-          border: 1px solid var(--border, #d4c9b5);
+          border: 1px solid var(--border, #1E2736);
         }
       </style>
 
