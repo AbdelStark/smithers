@@ -1,6 +1,6 @@
 import { BrowserWindow, BrowserView } from "electrobun/bun";
 import type { AppRPCType } from "../shared/rpc.js";
-import { createAppRuntime } from "./runtime.js";
+import { createAppRuntime } from "@smithers/core";
 
 process.on("uncaughtException", (err) => {
   console.error("[main] Uncaught exception:", err);

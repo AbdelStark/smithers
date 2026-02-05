@@ -1,6 +1,6 @@
 import { Electroview } from "electrobun/view";
 import type { AppRPCType } from "../../shared/rpc.js";
-import type { RpcClient, RpcFactory, RpcHandlers } from "./types.js";
+import type { RpcClient, RpcFactory, RpcHandlers } from "@smithers/ui/rpc";
 
 export const createElectrobunRpc: RpcFactory = (handlers: RpcHandlers): RpcClient => {
   const rpc = Electroview.defineRPC<AppRPCType>({ handlers });
