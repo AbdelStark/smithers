@@ -6,6 +6,9 @@ out
 dist
 *.tgz
 
+# desktop build artifacts
+apps/desktop/build/
+
 # code coverage
 coverage
 *.lcov
