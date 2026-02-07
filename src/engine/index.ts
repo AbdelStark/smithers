@@ -4,7 +4,7 @@ import { buildContext } from "../context";
 import { loadInput, loadOutputs } from "../db/snapshot";
 import { ensureSmithersTables } from "../db/ensure";
 import { SmithersDb } from "../db/adapter";
-import { selectOutputRow, upsertOutputRow, validateOutput, validateExistingOutput } from "../db/output";
+import { selectOutputRow, upsertOutputRow, validateOutput, validateExistingOutput, getAgentOutputSchema } from "../db/output";
 import { validateInput } from "../db/input";
 import { schemaSignature } from "../db/schema-signature";
 import { canonicalizeXml } from "../utils/xml";
@@ -495,12 +495,15 @@ async function executeTask(
             timeoutMs: desc.timeoutMs ?? toolConfig.toolTimeoutMs,
             seq: 0,
           },
-          async () =>
-            desc.agent!.generate({
+          async () => {
+            // Generate with the provided prompt
+            // The agent should output JSON as specified in the prompt
+            return desc.agent!.generate({
               options: undefined as any,
               prompt: desc.prompt ?? "",
               timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
-            }),
+            });
+          },
         );
         let output: any;
         
@@ -529,68 +532,87 @@ async function executeTask(
             // Not valid JSON, try extraction
           }
           
+          // Helper to extract balanced JSON from text
+          function extractBalancedJson(str: string): string | null {
+            const start = str.indexOf("{");
+            if (start === -1) return null;
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            for (let i = start; i < str.length; i++) {
+              const c = str[i];
+              if (escape) {
+                escape = false;
+                continue;
+              }
+              if (c === "\\") {
+                escape = true;
+                continue;
+              }
+              if (c === '"' && !escape) {
+                inString = !inString;
+                continue;
+              }
+              if (inString) continue;
+              if (c === "{") depth++;
+              else if (c === "}") {
+                depth--;
+                if (depth === 0) {
+                  return str.slice(start, i + 1);
+                }
+              }
+            }
+            return null;
+          }
+
           // Try to extract JSON from code fence (```json ... ```)
           if (output === undefined) {
-            // Check text first
-            const codeFenceMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-            if (codeFenceMatch) {
-              try {
-                output = JSON.parse(codeFenceMatch[1]);
-              } catch {
-                // Not valid JSON in code fence
+            // Check text first - look for code fence with balanced JSON
+            const codeFenceStart = text.search(/```(?:json)?\s*\{/);
+            if (codeFenceStart !== -1) {
+              const afterFence = text.slice(codeFenceStart).replace(/```(?:json)?\s*/, "");
+              const jsonStr = extractBalancedJson(afterFence);
+              if (jsonStr) {
+                try {
+                  output = JSON.parse(jsonStr);
+                } catch {
+                  // Not valid JSON in code fence
+                }
               }
             }
             
-            // Check all steps for code fences
+            // Check all steps for code fences with balanced JSON
             if (output === undefined) {
               const steps = (result as any).steps ?? [];
               for (let i = steps.length - 1; i >= 0; i--) {
                 const stepText = steps[i]?.text ?? "";
-                const stepMatch = stepText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-                if (stepMatch) {
-                  try {
-                    output = JSON.parse(stepMatch[1]);
-                    break;
-                  } catch {
-                    // Not valid JSON
+                const fenceStart = stepText.search(/```(?:json)?\s*\{/);
+                if (fenceStart !== -1) {
+                  const afterFence = stepText.slice(fenceStart).replace(/```(?:json)?\s*/, "");
+                  const jsonStr = extractBalancedJson(afterFence);
+                  if (jsonStr) {
+                    try {
+                      output = JSON.parse(jsonStr);
+                      break;
+                    } catch {
+                      // Not valid JSON
+                    }
                   }
                 }
               }
             }
           }
           
-          // Extract JSON object - use a smarter approach
+          // Extract JSON object using balanced brace matching
           if (output === undefined) {
             const steps = (result as any).steps ?? [];
             // Look through steps from end to find valid JSON
             for (let i = steps.length - 1; i >= 0; i--) {
               const stepText = steps[i]?.text ?? "";
-              // Try to find and parse JSON object
-              const jsonMatch = stepText.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
-              if (jsonMatch) {
-                for (const candidate of jsonMatch.reverse()) {
-                  try {
-                    const parsed = JSON.parse(candidate);
-                    if (typeof parsed === "object" && parsed !== null) {
-                      output = parsed;
-                      break;
-                    }
-                  } catch {
-                    // Not valid JSON
-                  }
-                }
-                if (output !== undefined) break;
-              }
-            }
-          }
-          
-          // Try text itself
-          if (output === undefined) {
-            const jsonMatch = text.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
-            if (jsonMatch) {
-              for (const candidate of jsonMatch.reverse()) {
+              const jsonStr = extractBalancedJson(stepText);
+              if (jsonStr) {
                 try {
-                  const parsed = JSON.parse(candidate);
+                  const parsed = JSON.parse(jsonStr);
                   if (typeof parsed === "object" && parsed !== null) {
                     output = parsed;
                     break;
@@ -601,17 +623,71 @@ async function executeTask(
               }
             }
           }
-          
+
+          // Try text itself
           if (output === undefined) {
+            const jsonStr = extractBalancedJson(text);
+            if (jsonStr) {
+              try {
+                const parsed = JSON.parse(jsonStr);
+                if (typeof parsed === "object" && parsed !== null) {
+                  output = parsed;
+                }
+              } catch {
+                // Not valid JSON
+              }
+            }
+          }
+          
+          // If no JSON found, send a follow-up prompt asking for just the JSON
+          if (output === undefined && desc.agent) {
+            const jsonPrompt = `You have completed your task. Now you MUST output ONLY a JSON object (no other text) with the required fields as specified in the original prompt. Output ONLY valid JSON, nothing else.`;
+            const retryResult = await desc.agent.generate({
+              options: undefined as any,
+              prompt: jsonPrompt,
+              timeout: desc.timeoutMs ? { totalMs: 30000 } : undefined,
+            });
+            const retryText = (retryResult as any).text ?? "";
+            try {
+              const trimmed = retryText.trim();
+              if (trimmed.startsWith("{")) {
+                output = JSON.parse(trimmed);
+              }
+            } catch {
+              // Still not valid JSON
+            }
+            if (output === undefined) {
+              // Try extracting balanced JSON from retry text
+              const jsonStr = extractBalancedJson(retryText);
+              if (jsonStr) {
+                try {
+                  output = JSON.parse(jsonStr);
+                } catch {
+                  // Not valid JSON
+                }
+              }
+            }
+          }
+
+          if (output === undefined) {
+            // Debug: log what we have
+            const debugSteps = (result as any).steps ?? [];
+            const stepTexts = debugSteps.map((s: any, i: number) => `Step ${i}: ${(s?.text ?? "").slice(0, 200)}`);
+            const finishReason = (result as any).finishReason ?? "unknown";
+            console.log(`[JSON Debug] finishReason=${finishReason}, text.length=${text.length}, steps.count=${debugSteps.length}`);
+            console.log(`[JSON Debug] text preview: ${text.slice(0, 300)}`);
+            console.log(`[JSON Debug] last step text: ${debugSteps[debugSteps.length - 1]?.text?.slice(0, 500) ?? "none"}`);
             throw new Error("No valid JSON output found in agent response");
           }
         }
-        
+
         // Output should already be parsed, but handle string case
         if (typeof output === "string") {
           try {
             payload = JSON.parse(output);
           } catch (e) {
+            const fs = await import("node:fs");
+            fs.appendFileSync("/tmp/smithers_debug.log", `[JSON Debug] output is string, length=${output.length}, preview: ${output.slice(0, 500)}\n`);
             throw new Error(`Failed to parse agent output as JSON. Output starts with: "${output.slice(0, 100)}"`);
           }
         } else {
@@ -984,15 +1060,16 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
         maxOutputBytes,
         toolTimeoutMs,
       };
+
       await Promise.all(
-        runnable.map((task) =>
-          executeTask(adapter, db, runId, task, eventBus, toolConfig, workflowName, cacheEnabled),
-        ),
-      );
+      runnable.map((task) =>
+        executeTask(adapter, db, runId, task, eventBus, toolConfig, workflowName, cacheEnabled),
+      ),
+    );
     }
   } catch (err) {
     if (process.env.SMITHERS_DEBUG) {
-      console.error("[smithers] runWorkflow error", err);
+      console.log("[smithers] runWorkflow error", err);
     }
     await adapter.updateRun(runId, { status: "failed", finishedAtMs: nowMs(), errorJson: JSON.stringify(errorToJson(err)) });
     await eventBus.emitEventWithPersist({ type: "RunFailed", runId, error: errorToJson(err), timestampMs: nowMs() });
