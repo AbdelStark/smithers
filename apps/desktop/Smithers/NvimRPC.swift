@@ -230,11 +230,19 @@ private struct MsgPackDecoder {
         case invalidData
     }
 
+    // FIX 1: After consuming bytes from a Data via removeFirst/dropFirst,
+    // Data.startIndex advances but integer subscripts (data[0]) still refer
+    // to absolute storage positions. We rebase via Data(...) so that
+    // subscript indices always start at 0.
     mutating func decodeNext(from data: inout Data) -> MsgPackValue? {
+        guard !data.isEmpty else { return nil }
+        if data.startIndex != 0 {
+            data = Data(data)
+        }
         var index = 0
         do {
             let value = try decodeValue(data, index: &index)
-            data.removeFirst(index)
+            data = Data(data.dropFirst(index))
             return value
         } catch DecodeError.insufficientData {
             return nil
@@ -331,6 +339,45 @@ private struct MsgPackDecoder {
             let length = Int(try readUInt(data, index: &index, bytes: 4))
             let bytes = try readBytes(data, index: &index, count: length)
             return .bin(bytes)
+        // MsgPack ext types — Neovim uses these for Buffer (type 0),
+        // Window (type 1), and Tabpage (type 2). The data payload is
+        // an integer handle, so we decode them as .int.
+        case 0xd4: // fixext1: 1-byte type + 1-byte data
+            _ = try readUInt8(data, index: &index) // ext type id
+            return .int(Int64(try readUInt8(data, index: &index)))
+        case 0xd5: // fixext2
+            _ = try readUInt8(data, index: &index)
+            return .int(Int64(try readUInt(data, index: &index, bytes: 2)))
+        case 0xd6: // fixext4
+            _ = try readUInt8(data, index: &index)
+            return .int(Int64(try readUInt(data, index: &index, bytes: 4)))
+        case 0xd7: // fixext8
+            _ = try readUInt8(data, index: &index)
+            return .int(Int64(try readUInt(data, index: &index, bytes: 8)))
+        case 0xd8: // fixext16
+            _ = try readUInt8(data, index: &index)
+            _ = try readBytes(data, index: &index, count: 16)
+            return .int(0)
+        case 0xc7: // ext8
+            let length = Int(try readUInt(data, index: &index, bytes: 1))
+            _ = try readUInt8(data, index: &index) // ext type
+            let bytes = try readBytes(data, index: &index, count: length)
+            if length <= 8 {
+                var value: UInt64 = 0
+                for b in bytes { value = (value << 8) | UInt64(b) }
+                return .int(Int64(value))
+            }
+            return .bin(bytes)
+        case 0xc8: // ext16
+            let length = Int(try readUInt(data, index: &index, bytes: 2))
+            _ = try readUInt8(data, index: &index)
+            let bytes = try readBytes(data, index: &index, count: length)
+            return .bin(bytes)
+        case 0xc9: // ext32
+            let length = Int(try readUInt(data, index: &index, bytes: 4))
+            _ = try readUInt8(data, index: &index)
+            let bytes = try readBytes(data, index: &index, count: length)
+            return .bin(bytes)
         default:
             throw DecodeError.invalidData
         }
@@ -415,8 +462,10 @@ final class NvimRPC: @unchecked Sendable {
         notificationsContinuation = continuation
     }
 
+    // FIX 2: Handle .waiting state from NWConnection. When the Unix socket
+    // doesn't exist yet, NWConnection enters .waiting instead of .failed.
+    // We treat it as an error so connectWithRetry can retry.
     func connect(to socketPath: String) async throws {
-        // Cancel any previous connection attempt
         self.connection?.cancel()
         self.connection = nil
 
@@ -458,11 +507,9 @@ final class NvimRPC: @unchecked Sendable {
     }
 
     func request(_ method: String, params: [MsgPackValue]) async throws -> MsgPackValue {
-        NvimController.log("[NvimRPC] request: %@", method)
-        let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MsgPackValue, Error>) in
+        try await withCheckedThrowingContinuation { continuation in
             queue.async { [weak self] in
                 guard let self, let connection = self.connection else {
-                    NvimController.log("[NvimRPC] request %@ - disconnected", method)
                     continuation.resume(throwing: NvimRPCError.disconnected)
                     return
                 }
@@ -476,20 +523,14 @@ final class NvimRPC: @unchecked Sendable {
                     .array(params),
                 ])
                 let data = MsgPackEncoder.encode(message)
-                NvimController.log("[NvimRPC] sending msgid=%lld method=%@", msgid, method)
                 connection.send(content: data, completion: .contentProcessed { error in
                     if let error {
-                        NvimController.log("[NvimRPC] send error msgid=%lld: %@", msgid, error.localizedDescription)
                         self.pending.removeValue(forKey: msgid)
                         continuation.resume(throwing: error)
-                    } else {
-                        NvimController.log("[NvimRPC] sent msgid=%lld successfully", msgid)
                     }
                 })
             }
         }
-        NvimController.log("[NvimRPC] request %@ completed: %@", method, String(result.description.prefix(100)))
-        return result
     }
 
     func notify(_ method: String, params: [MsgPackValue]) throws {
@@ -520,22 +561,16 @@ final class NvimRPC: @unchecked Sendable {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                NvimController.log("[NvimRPC] received %d bytes, buffer was %d bytes", data.count, self.buffer.count)
                 self.buffer.append(data)
-                NvimController.log("[NvimRPC] buffer now %d bytes, startIndex=%d", self.buffer.count, self.buffer.startIndex)
                 while let message = self.decoder.decodeNext(from: &self.buffer) {
-                    NvimController.log("[NvimRPC] decoded message: %@", String(message.description.prefix(200)))
                     self.handleMessage(message)
                 }
-                NvimController.log("[NvimRPC] decode loop done, %d bytes remaining in buffer", self.buffer.count)
             }
             if let error {
-                NvimController.log("[NvimRPC] receive error: %@", error.localizedDescription)
                 self.failAllPending(error)
                 return
             }
             if isComplete {
-                NvimController.log("[NvimRPC] receive complete (disconnected)")
                 self.failAllPending(NvimRPCError.disconnected)
                 return
             }
