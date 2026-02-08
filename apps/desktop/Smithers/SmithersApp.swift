@@ -60,5 +60,10 @@ struct SmithersApp: App {
             let url = URL(fileURLWithPath: path)
             workspace.openDirectory(url)
         }
+        if let idx = args.firstIndex(of: "-openFile"),
+           idx + 1 < args.count {
+            let path = args[idx + 1]
+            workspace.selectFile(URL(fileURLWithPath: path))
+        }
     }
 }
