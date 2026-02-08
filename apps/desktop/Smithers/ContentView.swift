@@ -142,41 +142,39 @@ struct ContentView: View {
                 FileTreeSidebar(workspace: workspace)
                     .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 400)
             } detail: {
-                if let selectedURL = workspace.selectedFileURL {
-                    if workspace.isChatURL(selectedURL) {
-                        ChatView(workspace: workspace)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if workspace.isTerminalURL(selectedURL) {
-                        if let view = workspace.terminalViews[selectedURL] {
-                            TerminalTabView(view: view)
+                VStack(spacing: 0) {
+                    if !workspace.openFiles.isEmpty {
+                        TabBar(workspace: workspace)
+                        Divider()
+                    }
+                    if let selectedURL = workspace.selectedFileURL {
+                        if workspace.isChatURL(selectedURL) {
+                            ChatView(workspace: workspace)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if workspace.isTerminalURL(selectedURL) {
+                            if let view = workspace.terminalViews[selectedURL] {
+                                TerminalTabView(view: view)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            } else {
+                                emptyEditor
+                            }
+                        } else if workspace.isDiffURL(selectedURL) {
+                            if let tab = workspace.diffTab(for: selectedURL) {
+                                DiffViewer(title: tab.title, summary: tab.summary, diff: tab.diff)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            } else {
+                                emptyEditor
+                            }
                         } else {
-                            emptyEditor
-                        }
-                    } else if workspace.isDiffURL(selectedURL) {
-                        if let tab = workspace.diffTab(for: selectedURL) {
-                            DiffViewer(title: tab.title, summary: tab.summary, diff: tab.diff)
+                            CodeEditor(text: $workspace.editorText, language: workspace.currentLanguage, fileURL: workspace.selectedFileURL)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            emptyEditor
                         }
                     } else {
-                        CodeEditor(text: $workspace.editorText, language: workspace.currentLanguage, fileURL: workspace.selectedFileURL)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        emptyEditor
                     }
-                } else {
-                    emptyEditor
                 }
             }
             .navigationTitle("")
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    if !workspace.openFiles.isEmpty {
-                        TabBar(workspace: workspace)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
 
             if workspace.isCommandPalettePresented {
                 CommandPaletteView(workspace: workspace)
@@ -205,41 +203,98 @@ struct TabBar: View {
     @ObservedObject var workspace: WorkspaceState
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(workspace.openFiles, id: \.self) { url in
-                    let isChat = workspace.isChatURL(url)
-                    let isDiff = workspace.isDiffURL(url)
-                    if workspace.isTerminalURL(url),
-                       let view = workspace.terminalViews[url] {
-                        TerminalTabBarItem(
-                            view: view,
-                            isSelected: url == workspace.selectedFileURL,
-                            onSelect: { workspace.selectFile(url) },
-                            onClose: { workspace.closeFile(url) }
-                        )
-                    } else {
-                        let diffInfo = isDiff ? workspace.diffTab(for: url) : nil
-                        let diffSubtitle = diffInfo?.summary.isEmpty == false ? diffInfo?.summary : "Diff view"
-                        TabBarItem(
-                            title: isChat ? "Chat" : (diffInfo?.title ?? url.lastPathComponent),
-                            subtitle: isChat ? "Current chat" : (diffSubtitle ?? workspace.displayPath(for: url)),
-                            icon: isChat ? "bubble.left.and.bubble.right" : (isDiff ? "arrow.left.and.right" : iconForFile(url.lastPathComponent)),
-                            isSelected: url == workspace.selectedFileURL,
-                            onSelect: {
-                                workspace.selectFile(url)
-                            },
-                            onClose: {
-                                workspace.closeFile(url)
-                            }
-                        )
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(workspace.openFiles, id: \.self) { url in
+                        let isChat = workspace.isChatURL(url)
+                        let isDiff = workspace.isDiffURL(url)
+                        if workspace.isTerminalURL(url),
+                           let view = workspace.terminalViews[url] {
+                            TerminalTabBarItem(
+                                view: view,
+                                isSelected: url == workspace.selectedFileURL,
+                                onSelect: { workspace.selectFile(url) },
+                                onClose: { workspace.closeFile(url) }
+                            )
+                        } else {
+                            let diffInfo = isDiff ? workspace.diffTab(for: url) : nil
+                            let diffSubtitle = diffInfo?.summary.isEmpty == false ? diffInfo?.summary : "Diff view"
+                            TabBarItem(
+                                title: isChat ? "Chat" : (diffInfo?.title ?? url.lastPathComponent),
+                                subtitle: isChat ? "Current chat" : (diffSubtitle ?? workspace.displayPath(for: url)),
+                                icon: isChat ? "bubble.left.and.bubble.right" : (isDiff ? "arrow.left.and.right" : iconForFile(url.lastPathComponent)),
+                                isSelected: url == workspace.selectedFileURL,
+                                onSelect: {
+                                    workspace.selectFile(url)
+                                },
+                                onClose: {
+                                    workspace.closeFile(url)
+                                }
+                            )
+                        }
                     }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+
+            Menu {
+                Section("Switch To") {
+                    ForEach(workspace.openFiles, id: \.self) { url in
+                        Button {
+                            workspace.selectFile(url)
+                        } label: {
+                            Label(tabTitle(for: url), systemImage: tabIcon(for: url))
+                        }
+                    }
+                }
+                Section("Close") {
+                    ForEach(workspace.openFiles, id: \.self) { url in
+                        Button(role: .destructive) {
+                            workspace.closeFile(url)
+                        } label: {
+                            Text("Close \(tabTitle(for: url))")
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .help("All tabs")
+            .padding(.trailing, 8)
         }
         .accessibilityIdentifier("EditorTabBar")
+        .background(Color(nsColor: NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1)))
+    }
+
+    private func tabTitle(for url: URL) -> String {
+        if workspace.isChatURL(url) {
+            return "Chat"
+        }
+        if workspace.isTerminalURL(url) {
+            let title = workspace.terminalViews[url]?.title ?? ""
+            return title.isEmpty ? "Terminal" : title
+        }
+        if workspace.isDiffURL(url) {
+            return workspace.diffTab(for: url)?.title ?? "Diff"
+        }
+        return url.lastPathComponent
+    }
+
+    private func tabIcon(for url: URL) -> String {
+        if workspace.isChatURL(url) {
+            return "bubble.left.and.bubble.right"
+        }
+        if workspace.isTerminalURL(url) {
+            return "terminal"
+        }
+        if workspace.isDiffURL(url) {
+            return "arrow.left.and.right"
+        }
+        return iconForFile(url.lastPathComponent)
     }
 }
 
