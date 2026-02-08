@@ -57,11 +57,19 @@ class WorkspaceState: ObservableObject {
     @Published var rootDirectory: URL?
     @Published var fileTree: [FileItem] = []
     @Published var openFiles: [URL] = []
-    @Published var selectedFileURL: URL?
+    @Published var selectedFileURL: URL? {
+        didSet {
+            updateWindowTitle()
+        }
+    }
     @Published var terminalViews: [URL: GhosttyTerminalView] = [:]
     @Published private(set) var nvimTerminalView: GhosttyTerminalView?
     @Published private(set) var nvimCurrentFilePath: String?
-    @Published private(set) var nvimModifiedBuffers: [NvimModifiedBuffer] = []
+    @Published private(set) var nvimModifiedBuffers: [NvimModifiedBuffer] = [] {
+        didSet {
+            updateWindowTitle()
+        }
+    }
     @Published var editorText: String = """
     func hello() {
         print("Hello, Smithers!")
@@ -77,6 +85,7 @@ class WorkspaceState: ObservableObject {
                   !isTerminalURL(selectedFileURL)
             else { return }
             openFileContents[selectedFileURL] = editorText
+            updateWindowTitle()
         }
     }
     @Published var currentLanguage: SupportedLanguage?
@@ -104,9 +113,12 @@ class WorkspaceState: ObservableObject {
     private var fileIndexTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private var openFileContents: [URL: String] = [:]
+    private var savedFileContents: [URL: String] = [:]
     private var suppressEditorTextUpdate = false
     private var suppressSelectionSync = false
     private var closeGuardsBypassed = false
+    private var hideWindowUntilNvimReady = true
+    private var windowHiddenForNvim = false
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
@@ -145,6 +157,7 @@ class WorkspaceState: ObservableObject {
         currentLanguage = nil
         fileLoadTask?.cancel()
         openFileContents = [:]
+        savedFileContents = [:]
         fileIndex = []
         fileSearchResults = []
         activeDiffPreview = nil
@@ -216,11 +229,15 @@ class WorkspaceState: ObservableObject {
                 (try? String(contentsOf: requestedURL, encoding: .utf8)) ?? ""
             }.value
             guard !Task.isCancelled, let self else { return }
+            if self.savedFileContents[requestedURL] == nil {
+                self.savedFileContents[requestedURL] = text
+            }
             if self.openFileContents[requestedURL] == nil {
                 self.openFileContents[requestedURL] = text
             }
             guard self.selectedFileURL == requestedURL else { return }
             self.setEditorText(text)
+            self.updateWindowTitle()
         }
     }
 
@@ -232,7 +249,7 @@ class WorkspaceState: ObservableObject {
             case .deny:
                 return
             case .allow(let force):
-                self.closeFile(url, force: force)
+                closeFile(url, force: force)
             }
         }
     }
@@ -247,6 +264,8 @@ class WorkspaceState: ObservableObject {
             let wasSelected = selectedFileURL == url
             openFiles.remove(at: index)
             openFileContents.removeValue(forKey: url)
+            savedFileContents.removeValue(forKey: url)
+            savedFileContents.removeValue(forKey: url.standardizedFileURL)
             if wasSelected {
                 selectedFileURL = nil
                 currentLanguage = nil
@@ -265,6 +284,8 @@ class WorkspaceState: ObservableObject {
             diffTabs.removeValue(forKey: url)
         } else {
             openFileContents.removeValue(forKey: url)
+            savedFileContents.removeValue(forKey: url)
+            savedFileContents.removeValue(forKey: url.standardizedFileURL)
         }
 
         guard wasSelected else { return }
@@ -280,8 +301,154 @@ class WorkspaceState: ObservableObject {
         selectFile(nextURL)
     }
 
+    func confirmCloseForWindow() async -> Bool {
+        await confirmCloseIfNeeded(context: .window)
+    }
+
+    func confirmCloseForApplication() async -> Bool {
+        await confirmCloseIfNeeded(context: .application)
+    }
+
+    func setCloseGuardsBypassed(_ value: Bool) {
+        closeGuardsBypassed = value
+    }
+
+    func shouldBypassCloseGuards() -> Bool {
+        closeGuardsBypassed
+    }
+
+    private func closeDecisionForTab(_ url: URL) async -> CloseDecision {
+        if closeGuardsBypassed || !isNvimModeEnabled || !isRegularFileURL(url) {
+            return .allow(force: false)
+        }
+        guard let buffers = await fetchModifiedNvimBuffers() else {
+            let confirmed = confirmUnableToCheck(context: .tab(url))
+            return confirmed ? .allow(force: true) : .deny
+        }
+        let normalized = url.standardizedFileURL
+        let matching = buffers.filter { $0.url?.standardizedFileURL == normalized }
+        guard !matching.isEmpty else { return .allow(force: false) }
+        let confirmed = confirmDiscardChanges(context: .tab(url), buffers: matching)
+        return confirmed ? .allow(force: true) : .deny
+    }
+
+    private func confirmCloseIfNeeded(context: CloseContext) async -> Bool {
+        if closeGuardsBypassed || !isNvimModeEnabled {
+            return true
+        }
+        guard let buffers = await fetchModifiedNvimBuffers() else {
+            return confirmUnableToCheck(context: context)
+        }
+        guard !buffers.isEmpty else { return true }
+        return confirmDiscardChanges(context: context, buffers: buffers)
+    }
+
+    private func fetchModifiedNvimBuffers() async -> [NvimModifiedBuffer]? {
+        guard isNvimModeEnabled, let controller = nvimController else { return [] }
+        do {
+            let buffers = try await controller.listModifiedBuffers()
+            setNvimModifiedBuffers(buffers)
+            return buffers
+        } catch {
+            Self.debugLog("[WorkspaceState] listModifiedBuffers error: \(error)")
+            return nil
+        }
+    }
+
+    private func confirmDiscardChanges(context: CloseContext, buffers: [NvimModifiedBuffer]) -> Bool {
+        let names = uniqueBufferNames(from: buffers)
+        let count = names.count
+        let listText = formatBufferList(names)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch context {
+        case .tab(let url):
+            let name = names.first ?? displayPath(for: url)
+            alert.messageText = "The file \"\(name)\" has unsaved changes."
+            alert.informativeText = "Closing this tab will discard your changes."
+            alert.addButton(withTitle: "Close Tab")
+        case .window:
+            let fileWord = count == 1 ? "file" : "files"
+            alert.messageText = "You have unsaved changes in \(count) \(fileWord)."
+            alert.informativeText = buildCloseInfo(listText: listText, actionText: "Closing the window will discard these changes.")
+            alert.addButton(withTitle: "Close Window")
+        case .application:
+            let fileWord = count == 1 ? "file" : "files"
+            alert.messageText = "You have unsaved changes in \(count) \(fileWord)."
+            alert.informativeText = buildCloseInfo(listText: listText, actionText: "Quitting will discard these changes.")
+            alert.addButton(withTitle: "Quit")
+        }
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmUnableToCheck(context: CloseContext) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unable to check for unsaved changes."
+        switch context {
+        case .tab:
+            alert.informativeText = "Close this tab anyway?"
+            alert.addButton(withTitle: "Close Tab")
+        case .window:
+            alert.informativeText = "Close the window anyway?"
+            alert.addButton(withTitle: "Close Window")
+        case .application:
+            alert.informativeText = "Quit anyway?"
+            alert.addButton(withTitle: "Quit")
+        }
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func buildCloseInfo(listText: String, actionText: String) -> String {
+        if listText.isEmpty {
+            return actionText
+        }
+        return "Unsaved files:\n\(listText)\n\n\(actionText)"
+    }
+
+    private func formatBufferList(_ names: [String], limit: Int = 6) -> String {
+        guard !names.isEmpty else { return "" }
+        let shown = names.prefix(limit)
+        var text = shown.joined(separator: "\n")
+        let remaining = names.count - shown.count
+        if remaining > 0 {
+            text += "\n...and \(remaining) more"
+        }
+        return text
+    }
+
+    private func uniqueBufferNames(from buffers: [NvimModifiedBuffer]) -> [String] {
+        var names: [String] = []
+        var seen: Set<String> = []
+        for buffer in buffers {
+            let name = bufferDisplayName(buffer)
+            guard !seen.contains(name) else { continue }
+            seen.insert(name)
+            names.append(name)
+        }
+        return names
+    }
+
+    private func bufferDisplayName(_ buffer: NvimModifiedBuffer) -> String {
+        if let url = buffer.url {
+            return displayPath(for: url)
+        }
+        let trimmed = buffer.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Untitled"
+        }
+        return (trimmed as NSString).lastPathComponent
+    }
+
+    private static let debugDateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        return f
+    }()
+
     static func debugLog(_ msg: String) {
-        let ts = ISO8601DateFormatter().string(from: Date())
+        let ts = debugDateFormatter.string(from: Date())
         let line = "[\(ts)] \(msg)\n"
         let path = "/tmp/smithers-nvim-debug.log"
         if let fh = FileHandle(forWritingAtPath: path) {
@@ -346,6 +513,7 @@ class WorkspaceState: ObservableObject {
         guard let index = openFiles.firstIndex(of: normalizedURL) else { return }
         openFiles.remove(at: index)
         openFileContents.removeValue(forKey: normalizedURL)
+        nvimModifiedBuffers.removeAll { $0.url?.standardizedFileURL == normalizedURL }
         if selectedFileURL == normalizedURL {
             selectedFileURL = nil
             currentLanguage = nil
@@ -353,6 +521,83 @@ class WorkspaceState: ObservableObject {
         }
         if nvimCurrentFilePath == normalizedURL.path {
             nvimCurrentFilePath = nil
+        }
+    }
+
+    func handleNvimBufferDeleted(buffer: Int64) {
+        nvimModifiedBuffers.removeAll { $0.buffer == buffer }
+    }
+
+    func setNvimModifiedBuffers(_ buffers: [NvimModifiedBuffer]) {
+        if buffers.isEmpty {
+            nvimModifiedBuffers = []
+            return
+        }
+        var unique: [NvimModifiedBuffer] = []
+        unique.reserveCapacity(buffers.count)
+        var seen = Set<Int64>()
+        for buffer in buffers {
+            if buffer.buffer != 0 {
+                if seen.contains(buffer.buffer) { continue }
+                seen.insert(buffer.buffer)
+            }
+            unique.append(buffer)
+        }
+        nvimModifiedBuffers = unique
+    }
+
+    func handleNvimBufferModified(
+        buffer: Int64?,
+        name: String,
+        listed: Bool,
+        url: URL?,
+        modified: Bool
+    ) {
+        let bufferId = buffer ?? 0
+        let entry = NvimModifiedBuffer(buffer: bufferId, name: name, listed: listed, url: url)
+        updateModifiedEntry(entry, modified: modified)
+    }
+
+    func isNvimBufferModified(_ url: URL) -> Bool {
+        let normalized = url.standardizedFileURL
+        return nvimModifiedBuffers.contains { $0.url?.standardizedFileURL == normalized }
+    }
+
+    private func isNativeFileModified(_ url: URL) -> Bool {
+        let normalized = url.standardizedFileURL
+        let saved = savedFileContents[normalized] ?? savedFileContents[url]
+        guard let saved else { return false }
+        let current = openFileContents[normalized] ?? openFileContents[url]
+            ?? (selectedFileURL == normalized ? editorText : saved)
+        return current != saved
+    }
+
+    private func updateModifiedEntry(_ entry: NvimModifiedBuffer, modified: Bool) {
+        if modified {
+            if entry.buffer != 0, let index = nvimModifiedBuffers.firstIndex(where: { $0.buffer == entry.buffer }) {
+                nvimModifiedBuffers[index] = entry
+                return
+            }
+            if let url = entry.url,
+               let index = nvimModifiedBuffers.firstIndex(where: { $0.url?.standardizedFileURL == url.standardizedFileURL }) {
+                nvimModifiedBuffers[index] = entry
+                return
+            }
+            nvimModifiedBuffers.append(entry)
+            return
+        }
+
+        if entry.buffer != 0 {
+            nvimModifiedBuffers.removeAll { $0.buffer == entry.buffer }
+            return
+        }
+        if let url = entry.url {
+            nvimModifiedBuffers.removeAll { $0.url?.standardizedFileURL == url.standardizedFileURL }
+            return
+        }
+        let trimmed = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            nvimModifiedBuffers.removeAll { $0.name == trimmed }
         }
     }
 
@@ -377,6 +622,14 @@ class WorkspaceState: ObservableObject {
 
     func isRegularFileURL(_ url: URL) -> Bool {
         !isChatURL(url) && !isTerminalURL(url) && !isDiffURL(url)
+    }
+
+    func isFileModified(_ url: URL) -> Bool {
+        guard isRegularFileURL(url) else { return false }
+        if isNvimModeEnabled {
+            return isNvimBufferModified(url)
+        }
+        return isNativeFileModified(url)
     }
 
     func isTerminalURL(_ url: URL) -> Bool {
@@ -504,6 +757,8 @@ class WorkspaceState: ObservableObject {
         nvimController = nil
         nvimTerminalView = nil
         nvimCurrentFilePath = nil
+        nvimModifiedBuffers = []
+        updateWindowTitle()
     }
 
     private func handleNvimTerminalClosed() {
@@ -549,7 +804,7 @@ class WorkspaceState: ObservableObject {
 
     func closeSelectedTab() {
         guard let selectedFileURL else { return }
-        closeFile(selectedFileURL)
+        requestCloseFile(selectedFileURL)
     }
 
     func selectNextTab() {
@@ -647,6 +902,33 @@ class WorkspaceState: ObservableObject {
             return String(fullPath.dropFirst(prefix.count))
         }
         return url.lastPathComponent
+    }
+
+    private func updateWindowTitle() {
+        guard let window = NSApp.windows.first(where: { $0.isKeyWindow || $0.isMainWindow }) else { return }
+        let title = buildWindowTitle()
+        if window.title != title {
+            window.title = title
+        }
+    }
+
+    private func buildWindowTitle() -> String {
+        guard let selectedFileURL else { return "Smithers" }
+        var title: String
+        if isChatURL(selectedFileURL) {
+            title = "Chat"
+        } else if isTerminalURL(selectedFileURL) {
+            let terminalTitle = terminalViews[selectedFileURL]?.title ?? ""
+            title = terminalTitle.isEmpty ? "Terminal" : terminalTitle
+        } else if isDiffURL(selectedFileURL) {
+            title = diffTabs[selectedFileURL]?.title ?? "Diff"
+        } else {
+            title = displayPath(for: selectedFileURL)
+        }
+        if isRegularFileURL(selectedFileURL), isFileModified(selectedFileURL) {
+            title += "*"
+        }
+        return "\(title) - Smithers"
     }
 
     func sendChatMessage() {

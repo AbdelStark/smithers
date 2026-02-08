@@ -278,6 +278,7 @@ final class NvimController {
             await self.refreshColorscheme(reason: "initial")
             WorkspaceState.debugLog("[NvimController] setting isReady = true")
             self.isReady = true
+            await self.syncModifiedBuffers()
         }
     }
 
@@ -319,6 +320,16 @@ final class NvimController {
           group = group,
           callback = function(args)
             emit("write", args.buf)
+          end,
+        })
+
+        vim.api.nvim_create_autocmd({ "BufModifiedSet" }, {
+          group = group,
+          callback = function(args)
+            local name = vim.api.nvim_buf_get_name(args.buf)
+            local listed = vim.bo[args.buf].buflisted
+            local modified = vim.bo[args.buf].modified
+            vim.rpcnotify(chan, "smithers/buf", { event = "modified", buf = args.buf, name = name, listed = listed, modified = modified })
           end,
         })
 
@@ -365,6 +376,11 @@ final class NvimController {
         switch event {
         case "delete":
             handleBufferDelete(buf: buf)
+        case "modified":
+            guard let name = payload["name"]?.stringValue else { return }
+            let listed = parseBool(payload["listed"]) ?? false
+            let modified = parseBool(payload["modified"]) ?? false
+            handleBufferModified(buf: buf, name: name, listed: listed, modified: modified)
         case "write":
             guard let name = payload["name"]?.stringValue else { return }
             if let url = urlFromBufferName(name) {
@@ -396,9 +412,26 @@ final class NvimController {
 
     private func handleBufferDelete(buf: Int64?) {
         guard let buf else { return }
+        workspace?.handleNvimBufferDeleted(buffer: buf)
         guard let url = urlByBuffer.removeValue(forKey: buf) else { return }
         bufferByURL.removeValue(forKey: url)
         workspace?.handleNvimBufferDelete(url: url)
+    }
+
+    private func handleBufferModified(buf: Int64?, name: String, listed: Bool, modified: Bool) {
+        guard let buf else { return }
+        let url = urlFromBufferName(name)
+        if let url {
+            bufferByURL[url] = buf
+            urlByBuffer[buf] = url
+        }
+        workspace?.handleNvimBufferModified(
+            buffer: buf,
+            name: name,
+            listed: listed,
+            url: url,
+            modified: modified
+        )
     }
 
     private func syncInitialBuffers() async throws {
@@ -499,6 +532,15 @@ final class NvimController {
             params: [.string(script), .array(params)]
         )
         return parseHighlightMap(response)
+    }
+
+    private func syncModifiedBuffers() async {
+        do {
+            let buffers = try await listModifiedBuffers()
+            workspace?.setNvimModifiedBuffers(buffers)
+        } catch {
+            WorkspaceState.debugLog("[NvimController] syncModifiedBuffers error: \(error)")
+        }
     }
 
     private func parseModifiedBuffers(_ value: MsgPackValue) -> [NvimModifiedBuffer] {
