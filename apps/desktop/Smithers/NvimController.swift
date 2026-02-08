@@ -288,6 +288,7 @@ final class NvimController {
             await self.refreshColorscheme(reason: "initial")
             WorkspaceState.debugLog("[NvimController] setting isReady = true")
             self.isReady = true
+            self.workspace?.handleNvimReady()
             await self.syncModifiedBuffers()
         }
     }

@@ -125,6 +125,7 @@ class WorkspaceState: ObservableObject {
     private var suppressEditorTextUpdate = false
     private var suppressSelectionSync = false
     private var closeGuardsBypassed = false
+    private var windowHiddenForNvim = false
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
@@ -773,6 +774,7 @@ class WorkspaceState: ObservableObject {
             return
         }
         isNvimModeEnabled = true
+        maybeHideWindowForNvimStart()
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -851,6 +853,7 @@ class WorkspaceState: ObservableObject {
         nvimCurrentFilePath = nil
         nvimModifiedBuffers = []
         updateWindowTitle()
+        showWindowAfterNvimReady()
     }
 
     private func handleNvimTerminalClosed() {
@@ -858,6 +861,10 @@ class WorkspaceState: ObservableObject {
         appendErrorMessage("Neovim exited.")
         isNvimModeEnabled = false
         stopNvim()
+    }
+
+    func handleNvimReady() {
+        showWindowAfterNvimReady()
     }
 
     func makeOpenFileURL(path: String, line: Int?, column: Int?) -> URL? {
@@ -1069,6 +1076,21 @@ class WorkspaceState: ObservableObject {
             return URL(fileURLWithPath: trimmed, relativeTo: rootDirectory).standardizedFileURL
         }
         return URL(fileURLWithPath: trimmed).standardizedFileURL
+    }
+
+    private func maybeHideWindowForNvimStart() {
+        guard !windowHiddenForNvim else { return }
+        guard nvimController == nil && nvimStartTask == nil else { return }
+        guard let window = activeWindow() else { return }
+        windowHiddenForNvim = true
+        window.orderOut(nil)
+    }
+
+    private func showWindowAfterNvimReady() {
+        guard windowHiddenForNvim else { return }
+        windowHiddenForNvim = false
+        guard let window = activeWindow() else { return }
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func activeWindow() -> NSWindow? {
