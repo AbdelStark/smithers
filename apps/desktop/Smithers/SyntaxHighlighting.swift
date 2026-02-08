@@ -75,6 +75,42 @@ final class TreeSitterHighlighter {
         let range: NSRange
     }
 
+    private enum Palette {
+        static let baseForeground = NSColor.white
+        static let keyword = NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1)
+        static let string = NSColor(red: 0.90, green: 0.56, blue: 0.35, alpha: 1)
+        static let comment = NSColor(white: 0.45, alpha: 1)
+        static let commentMarker = NSColor(red: 0.92, green: 0.65, blue: 0.35, alpha: 1)
+        static let number = NSColor(red: 0.82, green: 0.77, blue: 0.55, alpha: 1)
+        static let type = NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1)
+        static let function = NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1)
+        static let constant = NSColor(red: 0.82, green: 0.77, blue: 0.55, alpha: 1)
+        static let operatorToken = NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1)
+        static let punctuation = NSColor(white: 0.70, alpha: 1)
+        static let attribute = NSColor(red: 0.90, green: 0.56, blue: 0.35, alpha: 1)
+        static let tag = NSColor(red: 0.90, green: 0.40, blue: 0.40, alpha: 1)
+        static let property = NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1)
+        static let constructor = NSColor(red: 0.82, green: 0.77, blue: 0.55, alpha: 1)
+        static let parameter = NSColor(red: 0.82, green: 0.60, blue: 0.50, alpha: 1)
+        static let label = NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1)
+        static let module = NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1)
+        static let heading = NSColor(red: 0.90, green: 0.40, blue: 0.40, alpha: 1)
+        static let link = NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1)
+        static let literal = NSColor(red: 0.90, green: 0.56, blue: 0.35, alpha: 1)
+        static let reference = NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1)
+        static let emphasis = NSColor(white: 0.85, alpha: 1)
+        static let strong = NSColor(white: 0.95, alpha: 1)
+        static let escape = NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1)
+    }
+
+    private static let baseFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private static let keywordFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+    private static let titleFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+    private static let baseAttributes: [NSAttributedString.Key: Any] = [
+        .foregroundColor: Palette.baseForeground,
+        .font: baseFont,
+    ]
+
     private let parser = Parser()
     private let lang: SupportedLanguage
     private let query: Query?
@@ -155,7 +191,8 @@ final class TreeSitterHighlighter {
         guard let storage = (textView.textContentManager as? NSTextContentStorage)?.textStorage else { return }
 
         storage.beginEditing()
-        storage.addAttributes([.foregroundColor: NSColor.white], range: fullRange)
+        storage.addAttributes(Self.baseAttributes, range: fullRange)
+        textView.typingAttributes = Self.baseAttributes
 
         for highlight in highlights {
             let nsRange = highlight.range
@@ -175,77 +212,97 @@ final class TreeSitterHighlighter {
     }
 
     private static func colorForCapture(_ name: String) -> NSColor? {
+        if name.contains("comment.todo") || name.contains("comment.warning") || name.contains("comment.error") ||
+            name.contains("comment.note") {
+            return Palette.commentMarker
+        }
+        if name.contains("string.escape") || name.contains("string.special") {
+            return Palette.escape
+        }
+        if name.contains("keyword.operator") {
+            return Palette.operatorToken
+        }
+        if name.contains("variable.parameter") {
+            return Palette.parameter
+        }
+        if name.contains("variable.member") || name.contains("variable.field") {
+            return Palette.property
+        }
+        if name.contains("constant.builtin") || name.contains("constant.macro") {
+            return Palette.constant
+        }
+
         let base = name.components(separatedBy: ".").first ?? name
         switch base {
         case "keyword":
-            return NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1) // purple
+            return Palette.keyword
         case "string":
-            return NSColor(red: 0.90, green: 0.56, blue: 0.35, alpha: 1) // orange
+            return Palette.string
         case "comment":
-            return NSColor(white: 0.45, alpha: 1) // gray
+            return Palette.comment
         case "number", "float", "boolean":
-            return NSColor(red: 0.82, green: 0.77, blue: 0.55, alpha: 1) // yellow
+            return Palette.number
         case "type":
-            return NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1) // teal
+            return Palette.type
         case "function", "method":
-            return NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1) // blue
+            return Palette.function
         case "constant":
-            return NSColor(red: 0.82, green: 0.77, blue: 0.55, alpha: 1) // yellow
+            return Palette.constant
         case "operator":
-            return NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1) // teal
+            return Palette.operatorToken
         case "punctuation":
-            return NSColor(white: 0.70, alpha: 1) // light gray
+            return Palette.punctuation
         case "attribute":
-            return NSColor(red: 0.90, green: 0.56, blue: 0.35, alpha: 1) // orange
+            return Palette.attribute
         case "tag":
-            return NSColor(red: 0.90, green: 0.40, blue: 0.40, alpha: 1) // red
+            return Palette.tag
         case "property", "field":
-            return NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1) // blue
+            return Palette.property
         case "constructor":
-            return NSColor(red: 0.82, green: 0.77, blue: 0.55, alpha: 1) // yellow
+            return Palette.constructor
         case "variable":
             if name == "variable.builtin" || name == "variable.parameter" {
-                return NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1) // purple
+                return Palette.keyword
             }
             return nil
         case "include", "namespace", "module":
-            return NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1) // purple
+            return Palette.module
         case "label":
-            return NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1) // blue
+            return Palette.label
         case "text":
             if name.contains("title") || name.contains("heading") {
-                return NSColor(red: 0.90, green: 0.40, blue: 0.40, alpha: 1) // red for headings
+                return Palette.heading
             }
             if name.contains("uri") || name.contains("link") {
-                return NSColor(red: 0.40, green: 0.65, blue: 0.90, alpha: 1) // blue for links
+                return Palette.link
             }
             if name.contains("literal") {
-                return NSColor(red: 0.90, green: 0.56, blue: 0.35, alpha: 1) // orange for code
+                return Palette.literal
             }
             if name.contains("reference") {
-                return NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1) // teal for refs
+                return Palette.reference
             }
             if name.contains("emphasis") {
-                return NSColor(white: 0.85, alpha: 1)
+                return Palette.emphasis
             }
             if name.contains("strong") {
-                return NSColor(white: 0.95, alpha: 1)
+                return Palette.strong
             }
             return nil
         case "escape":
-            return NSColor(red: 0.35, green: 0.75, blue: 0.78, alpha: 1) // teal
+            return Palette.escape
         case "embedded":
             return nil
         case "parameter":
-            return NSColor(red: 0.82, green: 0.60, blue: 0.50, alpha: 1) // muted orange
+            return Palette.parameter
         case "preproc":
-            return NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1) // purple
+            return Palette.keyword
         case "define":
-            return NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1) // purple
+            return Palette.keyword
         case "conditional", "repeat", "exception":
-            return NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1) // purple (keyword-like)
+            return Palette.keyword
         case "storageclass":
-            return NSColor(red: 0.78, green: 0.46, blue: 0.82, alpha: 1) // purple
+            return Palette.keyword
         case "none":
             return nil
         default:
@@ -256,10 +313,10 @@ final class TreeSitterHighlighter {
     private static func fontForCapture(_ name: String) -> NSFont? {
         let base = name.components(separatedBy: ".").first ?? name
         if base == "keyword" {
-            return NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+            return Self.keywordFont
         }
         if name.contains("title") || name.contains("strong") {
-            return NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+            return Self.titleFont
         }
         return nil
     }
