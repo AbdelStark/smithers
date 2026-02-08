@@ -264,6 +264,7 @@ struct ChatView: View {
     @FocusState private var inputFocused: Bool
 
     var body: some View {
+        let theme = workspace.theme
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -278,7 +279,7 @@ struct ChatView: View {
                     }
                     .padding(16)
                 }
-                .background(Color(nsColor: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1)))
+                .background(theme.backgroundColor)
                 .onChange(of: workspace.chatMessages) { _, messages in
                     guard let last = messages.last else { return }
                     withAnimation(.easeOut(duration: 0.2)) {
@@ -288,6 +289,7 @@ struct ChatView: View {
             }
 
             Divider()
+                .background(theme.dividerColor)
 
             HStack(spacing: 8) {
                 TextField("Message...", text: $workspace.chatDraft, axis: .vertical)
@@ -296,7 +298,7 @@ struct ChatView: View {
                     .padding(10)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
+                            .fill(theme.inputFieldBackgroundColor)
                     )
                     .focused($inputFocused)
                     .onSubmit {
@@ -326,7 +328,7 @@ struct ChatView: View {
                 .controlSize(.small)
             }
             .padding(12)
-            .background(Color(nsColor: NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1)))
+            .background(theme.secondaryBackgroundColor)
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -338,6 +340,7 @@ struct ChatView: View {
                 title: preview.title,
                 summary: preview.summary,
                 diff: preview.diff,
+                theme: workspace.theme,
                 onOpenInTab: {
                     workspace.openDiffTab(title: preview.title, summary: preview.summary, diff: preview.diff)
                     workspace.activeDiffPreview = nil
@@ -349,6 +352,7 @@ struct ChatView: View {
                 title: snapshot.title,
                 summary: snapshot.summary,
                 diff: snapshot.diff,
+                theme: workspace.theme,
                 onOpenInTab: {
                     workspace.openDiffTab(title: snapshot.title, summary: snapshot.summary, diff: snapshot.diff)
                     workspace.activeSessionDiff = nil
@@ -385,19 +389,20 @@ struct ChatBubble: View {
     }
 
     private var bubbleColor: Color {
+        let theme = workspace.theme
         switch message.kind {
         case .command:
-            return Color.black.opacity(0.35)
+            return theme.chatCommandBubbleColor
         case .status:
-            return Color.white.opacity(0.05)
+            return theme.chatStatusBubbleColor
         case .diffPreview:
-            return Color.white.opacity(0.07)
+            return theme.chatDiffBubbleColor
         case .text:
             switch message.role {
             case .assistant:
-                return Color.white.opacity(0.08)
+                return theme.chatAssistantBubbleColor
             case .user:
-                return Color.blue.opacity(0.35)
+                return theme.chatUserBubbleColor
             }
         }
     }
