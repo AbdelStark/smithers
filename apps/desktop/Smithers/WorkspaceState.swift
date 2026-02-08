@@ -249,9 +249,22 @@ class WorkspaceState: ObservableObject {
         selectFile(nextURL)
     }
 
+    static func debugLog(_ msg: String) {
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(ts)] \(msg)\n"
+        let path = "/tmp/smithers-nvim-debug.log"
+        if let fh = FileHandle(forWritingAtPath: path) {
+            fh.seekToEndOfFile()
+            fh.write(Data(line.utf8))
+            fh.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
+        }
+    }
+
     func handleNvimBufferEnter(url: URL, select: Bool) {
         let normalizedURL = url.standardizedFileURL
-        NvimController.log("[WorkspaceState] handleNvimBufferEnter: %@ select: %@", normalizedURL.path, select ? "true" : "false")
+        Self.debugLog("[WorkspaceState] handleNvimBufferEnter: \(normalizedURL.path) select: \(select)")
         if !openFiles.contains(normalizedURL) {
             openFiles.append(normalizedURL)
         }
@@ -260,11 +273,41 @@ class WorkspaceState: ObservableObject {
                 suppressSelectionSync = true
                 selectedFileURL = normalizedURL
             }
-            NvimController.log("[WorkspaceState] setting nvimCurrentFilePath = %@", normalizedURL.path)
+            Self.debugLog("[WorkspaceState] setting nvimCurrentFilePath = \(normalizedURL.path)")
             nvimCurrentFilePath = normalizedURL.path
             currentLanguage = nil
             setEditorText("")
         }
+    }
+
+    func refreshFileTreeForNewFile(_ url: URL) {
+        let parentURL = url.deletingLastPathComponent()
+        guard let rootDirectory else { return }
+        // Only refresh if the file is within the workspace
+        guard url.path.hasPrefix(rootDirectory.path) else { return }
+        // Check if the file already exists in the tree — if so, nothing to do
+        if fileTreeContains(url: url, in: fileTree) { return }
+        // Reload the parent directory's children in the tree
+        let newChildren = FileItem.loadShallowChildren(of: parentURL)
+        if parentURL == rootDirectory {
+            fileTree = newChildren
+        } else {
+            var updated = fileTree
+            FileItem.replaceChildren(in: &updated, for: parentURL, with: newChildren)
+            fileTree = updated
+        }
+        // Also rebuild the file index for command palette search
+        rebuildFileIndex()
+    }
+
+    private func fileTreeContains(url: URL, in items: [FileItem]) -> Bool {
+        for item in items {
+            if item.id == url { return true }
+            if let children = item.children, fileTreeContains(url: url, in: children) {
+                return true
+            }
+        }
+        return false
     }
 
     func handleNvimBufferDelete(url: URL) {
@@ -312,7 +355,7 @@ class WorkspaceState: ObservableObject {
 
     private func openFileInNvim(_ url: URL, line: Int?, column: Int?) {
         let normalizedURL = url.standardizedFileURL
-        NvimController.log("[WorkspaceState] openFileInNvim: %@", normalizedURL.path)
+        Self.debugLog("[WorkspaceState] openFileInNvim: \(normalizedURL.path)")
         if !openFiles.contains(normalizedURL) {
             openFiles.append(normalizedURL)
         }
@@ -322,13 +365,12 @@ class WorkspaceState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                NvimController.log("[WorkspaceState] openFileInNvim: awaiting ensureNvimStarted")
                 let controller = try await self.ensureNvimStarted()
-                NvimController.log("[WorkspaceState] openFileInNvim: nvim started, calling openFile")
+                Self.debugLog("[WorkspaceState] openFileInNvim: calling openFile")
                 try await controller.openFile(normalizedURL, line: line, column: column)
-                NvimController.log("[WorkspaceState] openFileInNvim: openFile completed")
+                Self.debugLog("[WorkspaceState] openFileInNvim: openFile completed OK")
             } catch {
-                NvimController.log("[WorkspaceState] openFileInNvim error: %@", error.localizedDescription)
+                Self.debugLog("[WorkspaceState] openFileInNvim error: \(error)")
                 self.appendErrorMessage("Neovim error: \(error.localizedDescription)")
                 if error is NvimRPCError || error is NvimController.ControllerError {
                     self.isNvimModeEnabled = false
