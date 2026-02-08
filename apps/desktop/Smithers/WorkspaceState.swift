@@ -116,6 +116,7 @@ class WorkspaceState: ObservableObject {
     }
     @Published private(set) var fileSearchResults: [FileIndexEntry] = []
     @Published private(set) var paletteCommands: [PaletteCommand] = []
+    @Published var toastMessage: String?
     private var fileLoadTask: Task<Void, Never>?
     private var fileIndex: [FileIndexEntry] = []
     private var fileIndexTask: Task<Void, Never>?
@@ -126,6 +127,8 @@ class WorkspaceState: ObservableObject {
     private var suppressSelectionSync = false
     private var closeGuardsBypassed = false
     private var windowHiddenForNvim = false
+    private var toastTask: Task<Void, Never>?
+    private var toastToken: Int = 0
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
@@ -705,8 +708,10 @@ class WorkspaceState: ObservableObject {
                     try await controller.saveAll()
                     let buffers = try await controller.listModifiedBuffers()
                     self.setNvimModifiedBuffers(buffers)
+                    self.showToast("Saved all")
                 } catch {
                     self.appendErrorMessage("Save failed: \(error.localizedDescription)")
+                    self.showToast("Save failed")
                 }
             }
             return
@@ -724,17 +729,20 @@ class WorkspaceState: ObservableObject {
                     try await controller.saveCurrent()
                     let buffers = try await controller.listModifiedBuffers()
                     self.setNvimModifiedBuffers(buffers)
+                    self.showToast("Saved")
                 } catch {
                     self.appendErrorMessage("Save failed: \(error.localizedDescription)")
+                    self.showToast("Save failed")
                 }
             }
             return
         }
-        saveNativeFile(selectedFileURL)
+        saveNativeFile(selectedFileURL, showToast: true)
     }
 
     private func saveAllNativeFiles() {
         var didSave = false
+        var hadError = false
         for url in openFiles where isRegularFileURL(url) {
             let normalized = url.standardizedFileURL
             guard let content = openFileContents[normalized] ?? openFileContents[url] else { continue }
@@ -749,26 +757,47 @@ class WorkspaceState: ObservableObject {
                 didSave = true
             } catch {
                 appendErrorMessage("Failed to save \(displayPath(for: normalized)): \(error.localizedDescription)")
+                hadError = true
             }
         }
         if didSave {
             updateWindowTitle()
         }
+        if hadError {
+            showToast("Save failed for some files")
+        } else if didSave {
+            showToast("Saved all")
+        } else {
+            showToast("No changes to save")
+        }
     }
 
-    private func saveNativeFile(_ url: URL) {
+    private func saveNativeFile(_ url: URL, showToast: Bool) {
         let normalized = url.standardizedFileURL
         let content = openFileContents[normalized] ?? openFileContents[url]
             ?? (selectedFileURL == normalized ? editorText : nil)
         guard let content else { return }
+        if let saved = savedFileContents[normalized] ?? savedFileContents[url],
+           saved == content {
+            if showToast {
+                self.showToast("No changes to save")
+            }
+            return
+        }
         do {
             try content.write(to: normalized, atomically: true, encoding: .utf8)
             savedFileContents[normalized] = content
             savedFileContents[url] = content
             openFileContents[normalized] = content
             updateWindowTitle()
+            if showToast {
+                self.showToast("Saved")
+            }
         } catch {
             appendErrorMessage("Failed to save \(displayPath(for: normalized)): \(error.localizedDescription)")
+            if showToast {
+                self.showToast("Save failed")
+            }
         }
     }
 
@@ -1130,6 +1159,20 @@ class WorkspaceState: ObservableObject {
 
     private func activeWindow() -> NSWindow? {
         NSApp.windows.first(where: { $0.isKeyWindow || $0.isMainWindow }) ?? NSApp.windows.first
+    }
+
+    func showToast(_ message: String, duration: TimeInterval = 2.0) {
+        toastToken += 1
+        let token = toastToken
+        toastMessage = message
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            await MainActor.run {
+                guard let self, token == self.toastToken else { return }
+                self.toastMessage = nil
+            }
+        }
     }
 
     func sendChatMessage() {
