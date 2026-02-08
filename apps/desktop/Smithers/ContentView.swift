@@ -243,6 +243,18 @@ struct ContentView: View {
                     .zIndex(1)
             }
 
+            if let toast = workspace.toastMessage {
+                VStack {
+                    Spacer()
+                    ToastView(message: toast, theme: workspace.theme)
+                        .padding(.bottom, 24)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .allowsHitTesting(false)
+                .zIndex(2)
+            }
+
             // Hidden accessibility element for test observability of nvim active file.
             // Uses .accessibilityHidden(false) to ensure XCUITest can find it despite zero size.
             if workspace.isNvimModeEnabled {
@@ -254,6 +266,7 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: workspace.isCommandPalettePresented)
+        .animation(.easeInOut(duration: 0.2), value: workspace.toastMessage)
         .background(workspace.theme.backgroundColor)
     }
 
@@ -280,6 +293,29 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(workspace.theme.backgroundColor)
+    }
+}
+
+private struct ToastView: View {
+    let message: String
+    let theme: AppTheme
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(theme.foregroundColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(theme.panelBackgroundColor)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(theme.panelBorderColor)
+            )
+            .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
+            .accessibilityIdentifier("ToastMessage")
     }
 }
 
