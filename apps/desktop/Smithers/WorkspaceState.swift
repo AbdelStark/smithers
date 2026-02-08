@@ -29,7 +29,7 @@ class WorkspaceState: ObservableObject {
     @Published var fileTree: [FileItem] = []
     @Published var openFiles: [URL] = []
     @Published var selectedFileURL: URL?
-    @Published var currentLanguage: SupportedLanguage?
+    @Published var terminalViews: [URL: GhosttyTerminalView] = [:]
     @Published var editorText: String = """
     func hello() {
         print("Hello, Smithers!")
@@ -40,10 +40,19 @@ class WorkspaceState: ObservableObject {
     {
         didSet {
             guard !suppressEditorTextUpdate else { return }
-            guard let selectedFileURL else { return }
+            guard let selectedFileURL,
+                  !isChatURL(selectedFileURL),
+                  !isTerminalURL(selectedFileURL)
+            else { return }
             openFileContents[selectedFileURL] = editorText
         }
     }
+    @Published var currentLanguage: SupportedLanguage?
+    @Published var chatMessages: [ChatMessage] = [
+        ChatMessage(role: .assistant, kind: .text("Chat ready. Ask me anything."))
+    ]
+    @Published var chatDraft: String = ""
+    @Published var isTurnInProgress: Bool = false
     @Published var isCommandPalettePresented: Bool = false
     @Published var fileSearchQuery: String = "" {
         didSet {
@@ -58,6 +67,12 @@ class WorkspaceState: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var openFileContents: [URL: String] = [:]
     private var suppressEditorTextUpdate = false
+    private static let chatURL = URL(string: "smithers-chat://current")!
+    private static let terminalScheme = "smithers-terminal"
+    private var terminalCounter = 0
+    private let ghosttyApp = GhosttyApp.shared
+    private var codexService: CodexService?
+    private var codexEventsTask: Task<Void, Never>?
     nonisolated private static let maxSearchResults = 200
     nonisolated private static let skipDirectoryNames: Set<String> = [
         ".git",
@@ -71,6 +86,8 @@ class WorkspaceState: ObservableObject {
     ]
 
     func openDirectory(_ url: URL) {
+        stopCodexService()
+        closeAllTerminals()
         rootDirectory = url
         fileTree = FileItem.loadTree(at: url)
         openFiles = []
@@ -81,10 +98,22 @@ class WorkspaceState: ObservableObject {
         openFileContents = [:]
         fileIndex = []
         fileSearchResults = []
+        openChat()
         rebuildFileIndex()
+        startCodexService(cwd: url.path)
     }
 
     func selectFile(_ url: URL) {
+        if isChatURL(url) {
+            openChat()
+            return
+        }
+        if isTerminalURL(url) {
+            selectedFileURL = url
+            currentLanguage = nil
+            setEditorText("")
+            return
+        }
         var isDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
             return
@@ -118,7 +147,11 @@ class WorkspaceState: ObservableObject {
         guard let index = openFiles.firstIndex(of: url) else { return }
         let wasSelected = selectedFileURL == url
         openFiles.remove(at: index)
-        openFileContents.removeValue(forKey: url)
+        if isTerminalURL(url) {
+            closeTerminal(url)
+        } else {
+            openFileContents.removeValue(forKey: url)
+        }
 
         guard wasSelected else { return }
         fileLoadTask?.cancel()
@@ -131,6 +164,14 @@ class WorkspaceState: ObservableObject {
         let nextIndex = min(index, openFiles.count - 1)
         let nextURL = openFiles[nextIndex]
         selectFile(nextURL)
+    }
+
+    func isChatURL(_ url: URL) -> Bool {
+        url == Self.chatURL
+    }
+
+    func isTerminalURL(_ url: URL) -> Bool {
+        url.scheme == Self.terminalScheme
     }
 
     var isCommandMode: Bool {
@@ -173,6 +214,12 @@ class WorkspaceState: ObservableObject {
     }
 
     func displayPath(for url: URL) -> String {
+        if isChatURL(url) {
+            return "Current chat"
+        }
+        if isTerminalURL(url) {
+            return terminalViews[url]?.pwd ?? "Terminal"
+        }
         guard let rootDirectory else { return url.lastPathComponent }
         let rootPath = rootDirectory.path
         let fullPath = url.path
@@ -183,14 +230,78 @@ class WorkspaceState: ObservableObject {
         return url.lastPathComponent
     }
 
+    func sendChatMessage() {
+        let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        chatMessages.append(ChatMessage(role: .user, kind: .text(text)))
+        chatDraft = ""
+        guard let codexService else {
+            appendErrorMessage("Codex service is not running.")
+            return
+        }
+        isTurnInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await codexService.sendMessage(text)
+            } catch {
+                self.appendErrorMessage("Failed to send message: \(error.localizedDescription)")
+                self.isTurnInProgress = false
+            }
+        }
+    }
+
+    func interruptTurn() {
+        guard let codexService else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await codexService.interrupt()
+            } catch {
+                self.appendErrorMessage("Failed to interrupt: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func openTerminal() {
+        let url = URL(string: "\(Self.terminalScheme)://\(terminalCounter)")!
+        terminalCounter += 1
+        let workingDirectory = rootDirectory?.path ?? FileManager.default.homeDirectoryForCurrentUser.path
+        let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory)
+        view.onClose = { [weak self] in
+            self?.closeFile(url)
+        }
+        terminalViews[url] = view
+        openFiles.append(url)
+        selectedFileURL = url
+        currentLanguage = nil
+        setEditorText("")
+    }
+
     private func buildCommandList() -> [PaletteCommand] {
         [
+            PaletteCommand(
+                id: "new-terminal",
+                title: "New Terminal",
+                icon: "terminal",
+                action: { [weak self] in
+                    self?.openTerminal()
+                }
+            ),
             PaletteCommand(
                 id: "open-folder",
                 title: "Open Folder...",
                 icon: "folder",
                 action: { [weak self] in
                     self?.openFolderPanel()
+                }
+            ),
+            PaletteCommand(
+                id: "open-chat",
+                title: "Open Chat",
+                icon: "bubble.left.and.bubble.right",
+                action: { [weak self] in
+                    self?.openChat()
                 }
             ),
         ]
@@ -321,9 +432,154 @@ class WorkspaceState: ObservableObject {
         return 1000 + score
     }
 
+    private func startCodexService(cwd: String) {
+        stopCodexService()
+        let service = CodexService()
+        codexService = service
+
+        codexEventsTask = Task { [weak self] in
+            guard let self else { return }
+            for await event in service.events {
+                self.handleCodexEvent(event)
+            }
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await service.start(cwd: cwd)
+                if let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !apiKey.isEmpty {
+                    try await service.login(apiKey: apiKey)
+                }
+            } catch {
+                self.appendErrorMessage("Codex failed to start: \(error.localizedDescription)")
+                self.stopCodexService()
+            }
+        }
+    }
+
+    private func stopCodexService() {
+        codexEventsTask?.cancel()
+        codexEventsTask = nil
+        codexService?.stop()
+        codexService = nil
+        isTurnInProgress = false
+    }
+
+    private func handleCodexEvent(_ event: CodexEvent) {
+        switch event {
+        case .turnStarted:
+            isTurnInProgress = true
+        case .agentMessageDelta(let text):
+            applyAgentMessageDelta(text)
+        case .agentMessageCompleted(let text):
+            finalizeAgentMessage(text: text)
+        case .commandStarted(let itemId, let command, let cwd):
+            appendCommandMessage(itemId: itemId, command: command, cwd: cwd)
+        case .commandOutput(let itemId, let text):
+            appendCommandOutput(itemId: itemId, text: text)
+        case .commandCompleted(let itemId, let exitCode):
+            completeCommand(itemId: itemId, exitCode: exitCode)
+        case .turnCompleted(let status):
+            isTurnInProgress = false
+            finalizeAgentMessage(text: nil)
+            if status == "failed" {
+                appendErrorMessage("Turn failed.")
+            } else if status == "interrupted" {
+                appendErrorMessage("Turn interrupted.")
+            } else if status != "completed" {
+                appendErrorMessage("Turn finished with status: \(status)")
+            }
+        case .error(let message):
+            isTurnInProgress = false
+            appendErrorMessage(message)
+        }
+    }
+
+    private func applyAgentMessageDelta(_ delta: String) {
+        if let index = chatMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
+            var message = chatMessages[index]
+            message.appendText(delta)
+            chatMessages[index] = message
+        } else {
+            let message = ChatMessage(role: .assistant, kind: .text(delta), isStreaming: true)
+            chatMessages.append(message)
+        }
+    }
+
+    private func finalizeAgentMessage(text: String?) {
+        guard let index = chatMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) else { return }
+        var message = chatMessages[index]
+        if let text {
+            message.setText(text)
+        }
+        message.isStreaming = false
+        chatMessages[index] = message
+    }
+
+    private func appendCommandMessage(itemId: String, command: String, cwd: String) {
+        let info = CommandExecutionInfo(itemId: itemId, command: command, cwd: cwd, output: "", exitCode: nil, status: .running)
+        let message = ChatMessage(role: .assistant, kind: .command(info))
+        chatMessages.append(message)
+    }
+
+    private func appendCommandOutput(itemId: String, text: String) {
+        guard let index = chatMessages.lastIndex(where: { $0.commandItemId == itemId }) else {
+            appendCommandMessage(itemId: itemId, command: "command", cwd: "", output: text)
+            return
+        }
+        var message = chatMessages[index]
+        message.appendCommandOutput(text)
+        chatMessages[index] = message
+    }
+
+    private func completeCommand(itemId: String, exitCode: Int?) {
+        guard let index = chatMessages.lastIndex(where: { $0.commandItemId == itemId }) else { return }
+        var message = chatMessages[index]
+        message.completeCommand(exitCode: exitCode)
+        chatMessages[index] = message
+    }
+
+    private func appendCommandMessage(itemId: String, command: String, cwd: String, output: String) {
+        let info = CommandExecutionInfo(itemId: itemId, command: command, cwd: cwd, output: output, exitCode: nil, status: .running)
+        let message = ChatMessage(role: .assistant, kind: .command(info))
+        chatMessages.append(message)
+    }
+
+    private func appendErrorMessage(_ message: String) {
+        chatMessages.append(ChatMessage(role: .assistant, kind: .status(message)))
+    }
+
+    private func openChat() {
+        if !openFiles.contains(Self.chatURL) {
+            openFiles.insert(Self.chatURL, at: 0)
+        }
+        selectedFileURL = Self.chatURL
+        currentLanguage = nil
+        setEditorText("")
+    }
+
+    private func closeTerminal(_ url: URL) {
+        if let view = terminalViews[url] {
+            view.shutdown()
+        }
+        terminalViews.removeValue(forKey: url)
+    }
+
+    private func closeAllTerminals() {
+        for (_, view) in terminalViews {
+            view.shutdown()
+        }
+        terminalViews.removeAll()
+        openFiles.removeAll(where: { isTerminalURL($0) })
+    }
+
     private func setEditorText(_ text: String) {
         suppressEditorTextUpdate = true
         editorText = text
         suppressEditorTextUpdate = false
     }
+
+
 }
+

@@ -24,6 +24,12 @@ struct SmithersApp: App {
                 }
                 .keyboardShortcut("O", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .newItem) {
+                Button("New Terminal") {
+                    workspace.openTerminal()
+                }
+                .keyboardShortcut("`", modifiers: [.command])
+            }
             CommandGroup(replacing: .printItem) {
                 Button("Go to File...") {
                     workspace.showCommandPalette()

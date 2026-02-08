@@ -142,9 +142,21 @@ struct ContentView: View {
                 FileTreeSidebar(workspace: workspace)
                     .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 400)
             } detail: {
-                if workspace.selectedFileURL != nil {
-                    CodeEditor(text: $workspace.editorText, language: workspace.currentLanguage, fileURL: workspace.selectedFileURL)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let selectedURL = workspace.selectedFileURL {
+                    if workspace.isChatURL(selectedURL) {
+                        ChatView(workspace: workspace)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if workspace.isTerminalURL(selectedURL) {
+                        if let view = workspace.terminalViews[selectedURL] {
+                            TerminalTabView(view: view)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            emptyEditor
+                        }
+                    } else {
+                        CodeEditor(text: $workspace.editorText, language: workspace.currentLanguage, fileURL: workspace.selectedFileURL)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 } else {
                     emptyEditor
                 }
@@ -189,18 +201,29 @@ struct TabBar: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(workspace.openFiles, id: \.self) { url in
-                    TabBarItem(
-                        title: url.lastPathComponent,
-                        subtitle: workspace.displayPath(for: url),
-                        icon: iconForFile(url.lastPathComponent),
-                        isSelected: url == workspace.selectedFileURL,
-                        onSelect: {
-                            workspace.selectFile(url)
-                        },
-                        onClose: {
-                            workspace.closeFile(url)
-                        }
-                    )
+                    let isChat = workspace.isChatURL(url)
+                    if workspace.isTerminalURL(url),
+                       let view = workspace.terminalViews[url] {
+                        TerminalTabBarItem(
+                            view: view,
+                            isSelected: url == workspace.selectedFileURL,
+                            onSelect: { workspace.selectFile(url) },
+                            onClose: { workspace.closeFile(url) }
+                        )
+                    } else {
+                        TabBarItem(
+                            title: isChat ? "Chat" : url.lastPathComponent,
+                            subtitle: workspace.displayPath(for: url),
+                            icon: isChat ? "bubble.left.and.bubble.right" : iconForFile(url.lastPathComponent),
+                            isSelected: url == workspace.selectedFileURL,
+                            onSelect: {
+                                workspace.selectFile(url)
+                            },
+                            onClose: {
+                                workspace.closeFile(url)
+                            }
+                        )
+                    }
                 }
             }
             .padding(.horizontal, 8)
