@@ -121,8 +121,6 @@ class WorkspaceState: ObservableObject {
     private var suppressEditorTextUpdate = false
     private var suppressSelectionSync = false
     private var closeGuardsBypassed = false
-    private var hideWindowUntilNvimReady = true
-    private var windowHiddenForNvim = false
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
