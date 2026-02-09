@@ -98,6 +98,16 @@ final class SkillScanner {
             seen.insert(adminSkills.path)
         }
 
+        let codexHomePath = ProcessInfo.processInfo.environment["CODEX_HOME"]
+            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path
+        let systemSkills = URL(fileURLWithPath: codexHomePath, isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent(".system", isDirectory: true)
+        if fm.fileExists(atPath: systemSkills.path), !seen.contains(systemSkills.path) {
+            results.append((.system, systemSkills))
+            seen.insert(systemSkills.path)
+        }
+
         return results
     }
 
