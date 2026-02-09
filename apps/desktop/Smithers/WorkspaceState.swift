@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 struct FileIndexEntry: Identifiable, Hashable, Sendable {
     let id: URL
@@ -150,6 +151,7 @@ class WorkspaceState: ObservableObject {
             updateWindowTitle()
         }
     }
+    @Published private(set) var nvimViewport: NvimViewport?
     @Published private(set) var nvimModifiedBuffers: [NvimModifiedBuffer] = [] {
         didSet {
             updateWindowTitle()
@@ -275,6 +277,17 @@ class WorkspaceState: ObservableObject {
             updateTerminalOptionAsMeta()
         }
     }
+    @Published var scrollbarVisibilityMode: ScrollbarVisibilityMode = {
+        if let raw = UserDefaults.standard.string(forKey: WorkspaceState.scrollbarVisibilityModeKey),
+           let value = ScrollbarVisibilityMode(rawValue: raw) {
+            return value
+        }
+        return .automatic
+    }() {
+        didSet {
+            UserDefaults.standard.set(scrollbarVisibilityMode.rawValue, forKey: Self.scrollbarVisibilityModeKey)
+        }
+    }
     @Published var fileSearchQuery: String = "" {
         didSet {
             scheduleSearch()
@@ -355,6 +368,7 @@ class WorkspaceState: ObservableObject {
     private static let editorFontSizeKey = "smithers.editorFontSize"
     private static let nvimPathKey = "smithers.nvimPath"
     private static let optionAsMetaKey = "smithers.optionAsMeta"
+    private static let scrollbarVisibilityModeKey = "smithers.scrollbarVisibilityMode"
     private static let defaultEditorFontSize: Double = 13
     private static let defaultEditorFontName: String = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).fontName
     static let minEditorFontSize: Double = 9
@@ -1069,6 +1083,26 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    func handleNvimViewport(topLine: Int, bottomLine: Int, lineCount: Int) {
+        let safeCount = max(1, lineCount)
+        let safeTop = min(max(1, topLine), safeCount)
+        let safeBottom = min(max(safeTop, bottomLine), safeCount)
+        let viewport = NvimViewport(topLine: safeTop, bottomLine: safeBottom, lineCount: safeCount)
+        if viewport != nvimViewport {
+            nvimViewport = viewport
+        }
+    }
+
+    func scrollNvimToTopLine(_ topLine: Int) {
+        guard isNvimModeEnabled, let controller = nvimController else { return }
+        Task { await controller.scrollToTopLine(topLine) }
+    }
+
+    func scrollNvimByLines(_ delta: Int) {
+        guard isNvimModeEnabled, let controller = nvimController else { return }
+        Task { await controller.scrollByLines(delta) }
+    }
+
     func refreshFileTreeForNewFile(_ url: URL) {
         let parentURL = url.deletingLastPathComponent()
         guard let rootDirectory else { return }
@@ -1243,6 +1277,32 @@ class WorkspaceState: ObservableObject {
         if modified, let url {
             updateRecentEdit(for: url)
         }
+    }
+
+    func handleNvimModeChange(rawMode: String) {
+        let mapped = Self.mapNvimMode(rawMode)
+        if nvimMode != mapped {
+            nvimMode = mapped
+        }
+    }
+
+    private static func mapNvimMode(_ mode: String) -> NvimModeKind {
+        let trimmed = mode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .normal }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("i") || lower.hasPrefix("r") || lower.hasPrefix("t") {
+            return .insert
+        }
+        if lower.hasPrefix("c") {
+            return .command
+        }
+        if lower.hasPrefix("v") || lower.hasPrefix("s") {
+            return .visual
+        }
+        if trimmed == "\u{16}" || trimmed == "\u{13}" {
+            return .visual
+        }
+        return .normal
     }
 
     func isNvimBufferModified(_ url: URL) -> Bool {
@@ -1476,6 +1536,7 @@ class WorkspaceState: ObservableObject {
     private func enableNvimMode() {
         if rootDirectory == nil {
             isNvimModeEnabled = true
+            nvimMode = .normal
             openFolderPanel()
             if rootDirectory == nil {
                 isNvimModeEnabled = false
@@ -1483,6 +1544,7 @@ class WorkspaceState: ObservableObject {
             return
         }
         isNvimModeEnabled = true
+        nvimMode = .normal
         maybeHideWindowForNvimStart()
         Task { [weak self] in
             guard let self else { return }
@@ -1559,7 +1621,9 @@ class WorkspaceState: ObservableObject {
         nvimController = nil
         nvimTerminalView = nil
         nvimCurrentFilePath = nil
+        nvimViewport = nil
         nvimModifiedBuffers = []
+        nvimMode = .normal
         updateWindowTitle()
         showWindowAfterNvimReady()
     }
@@ -2439,6 +2503,102 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    func handleChatImagePaste() -> Bool {
+        let pasteboard = NSPasteboard.general
+        let images = Self.chatImages(from: pasteboard)
+        guard !images.isEmpty else { return false }
+        chatDraftImages.append(contentsOf: images)
+        return true
+    }
+
+    func handleChatImageDrop(providers: [NSItemProvider]) -> Bool {
+        var accepted = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                accepted = true
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    guard let url = Self.fileURL(from: item),
+                          Self.isSupportedImageURL(url),
+                          let image = ChatImage.fromFileURL(url)
+                    else { return }
+                    Task { @MainActor in
+                        self.chatDraftImages.append(image)
+                    }
+                }
+                continue
+            }
+
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                accepted = true
+                _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
+                    guard let nsImage = object as? NSImage,
+                          let image = ChatImage.fromImage(nsImage)
+                    else { return }
+                    Task { @MainActor in
+                        self.chatDraftImages.append(image)
+                    }
+                }
+            }
+        }
+        return accepted
+    }
+
+    private static func chatImages(from pasteboard: NSPasteboard) -> [ChatImage] {
+        guard let items = pasteboard.pasteboardItems else { return [] }
+        var images: [ChatImage] = []
+        for item in items {
+            if let url = imageFileURL(from: item),
+               let image = ChatImage.fromFileURL(url) {
+                images.append(image)
+                continue
+            }
+
+            if let data = item.data(forType: .png)
+                ?? item.data(forType: .tiff)
+                ?? item.data(forType: NSPasteboard.PasteboardType("public.image")),
+               let image = ChatImage.fromData(data)
+            {
+                images.append(image)
+                continue
+            }
+        }
+        return images
+    }
+
+    private static func imageFileURL(from item: NSPasteboardItem) -> URL? {
+        if let urlString = item.string(forType: .fileURL),
+           let url = URL(string: urlString),
+           isSupportedImageURL(url) {
+            return url
+        }
+        return nil
+    }
+
+    private static func fileURL(from item: Any?) -> URL? {
+        if let url = item as? URL, url.isFileURL {
+            return url
+        }
+        if let data = item as? Data,
+           let url = URL(dataRepresentation: data, relativeTo: nil),
+           url.isFileURL {
+            return url
+        }
+        if let urlString = item as? String,
+           let url = URL(string: urlString),
+           url.isFileURL {
+            return url
+        }
+        return nil
+    }
+
+    private static func isSupportedImageURL(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        guard !url.pathExtension.isEmpty else { return false }
+        let ext = url.pathExtension.lowercased()
+        guard let type = UTType(filenameExtension: ext) else { return false }
+        return type.conforms(to: .image)
+    }
+
     func startNewChat() {
         guard !isTurnInProgress else {
             showToast("Wait for the current turn to finish.")
@@ -2468,6 +2628,7 @@ class WorkspaceState: ObservableObject {
         chatMessages = Self.initialChatMessages()
         suppressChatHistoryPersistence = false
         chatDraft = ""
+        chatDraftImages = []
         isTurnInProgress = false
         activeDiffPreview = nil
         activeSessionDiff = nil
@@ -2726,6 +2887,15 @@ class WorkspaceState: ObservableObject {
                 shortcut: "⇧⌘N",
                 action: { [weak self] in
                     self?.toggleNvimMode()
+                }
+            ),
+            PaletteCommand(
+                id: "toggle-shortcuts",
+                title: "Toggle Keyboard Shortcuts",
+                icon: "keyboard",
+                shortcut: "⌘/",
+                action: { [weak self] in
+                    self?.toggleShortcutsPanel()
                 }
             ),
             PaletteCommand(
