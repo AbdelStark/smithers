@@ -439,7 +439,7 @@ class WorkspaceState: ObservableObject {
     private var fileIndexTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private var searchToken: Int = 0
-    private var searchInFilesTask: Task<Void, Never>?
+    private var searchInFilesTask: Task<SearchOutcome, Never>?
     private var searchInFilesToken: Int = 0
     private var searchPreviewTask: Task<Void, Never>?
     private var searchPreviewToken: Int = 0
@@ -479,12 +479,16 @@ class WorkspaceState: ObservableObject {
     private var nvimMessageExpiryTasks: [UUID: Task<Void, Never>] = [:]
     private var nvimMiniStatusTask: Task<Void, Never>?
     private var sessionPersistTask: Task<Void, Never>?
+    private var sessionDiffComputeTask: Task<Void, Never>?
+    private var sessionDiffComputeToken: Int = 0
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
+    private var diffPreviewIndexByTurnId: [String: Int] = [:]
     private var suppressChatHistoryPersistence = false
     private var chatSessions: [String: ChatSessionState] = [:]
     private var activeChatId: String = WorkspaceState.mainChatId
+    private var skillInstructionCache: [String: String] = [:]
     private let skillScanner = SkillScanner()
     private let skillRegistryClient = SkillRegistryClient()
     private let skillInstaller = SkillInstaller()
@@ -683,6 +687,7 @@ class WorkspaceState: ObservableObject {
         } else {
             chatMessages = Self.initialChatMessages()
         }
+        rebuildDiffPreviewIndex()
     }
 
     private func scheduleChatHistoryPersist() {
@@ -833,6 +838,7 @@ class WorkspaceState: ObservableObject {
         turnDiffs = [:]
         turnDiffOrder = []
         streamingTurnDiffs = [:]
+        diffPreviewIndexByTurnId = [:]
         for message in messages {
             guard case .diffPreview(let preview) = message.kind else { continue }
             guard let turnId = preview.turnId else { continue }
@@ -843,7 +849,17 @@ class WorkspaceState: ObservableObject {
             }
             turnDiffs[turnId] = preview.diff
         }
+        rebuildDiffPreviewIndex()
         updateSessionDiffSnapshot()
+    }
+
+    private func rebuildDiffPreviewIndex() {
+        diffPreviewIndexByTurnId = [:]
+        for (index, message) in chatMessages.enumerated() {
+            guard case .diffPreview(let preview) = message.kind else { continue }
+            guard let turnId = preview.turnId else { continue }
+            diffPreviewIndexByTurnId[turnId] = index
+        }
     }
 
     func openDirectory(_ url: URL, restoreSession: Bool = false) {
@@ -879,6 +895,8 @@ class WorkspaceState: ObservableObject {
         searchInFilesTask = nil
         searchPreviewTask?.cancel()
         searchPreviewTask = nil
+        sessionDiffComputeTask?.cancel()
+        sessionDiffComputeTask = nil
         chatHistoryPersistTask?.cancel()
         chatHistoryPersistTask = nil
         openFileContents = [:]
@@ -902,8 +920,10 @@ class WorkspaceState: ObservableObject {
         turnDiffs = [:]
         turnDiffOrder = []
         streamingTurnDiffs = [:]
+        diffPreviewIndexByTurnId = [:]
         turnHistoryOrder = []
         activeSkills = []
+        skillInstructionCache = [:]
         chatSessions = [:]
         activeChatId = Self.mainChatId
         diffTabs = [:]
@@ -3859,6 +3879,10 @@ class WorkspaceState: ObservableObject {
         activeDiffPreview = nil
         activeSessionDiff = nil
         sessionDiffSnapshot = nil
+        diffPreviewIndexByTurnId = [:]
+        sessionDiffComputeTask?.cancel()
+        sessionDiffComputeTask = nil
+        sessionDiffComputeToken += 1
         turnDiffs = [:]
         turnDiffOrder = []
         streamingTurnDiffs = [:]
@@ -4119,6 +4143,29 @@ class WorkspaceState: ObservableObject {
             }
         }
         return url
+    }
+
+    // MARK: - Terminal Content Reading
+
+    /// Read viewport text from all open terminals. Keys are terminal URL strings.
+    func readAllTerminalViewports() -> [String: String] {
+        var result: [String: String] = [:]
+        for (url, view) in terminalViews {
+            if let text = view.readViewportText() {
+                result[url.absoluteString] = text
+            }
+        }
+        return result
+    }
+
+    /// Read viewport text from a specific terminal by its URL.
+    func readTerminalViewport(for url: URL) -> String? {
+        terminalViews[url]?.readViewportText()
+    }
+
+    /// Read the full scrollback from a specific terminal by its URL.
+    func readTerminalScreen(for url: URL) -> String? {
+        terminalViews[url]?.readScreenText()
     }
 
     private func buildCommandList() -> [PaletteCommand] {
@@ -4629,11 +4676,11 @@ class WorkspaceState: ObservableObject {
                     guard let self, token == self.searchInFilesToken else { return }
                     self.isSearchInProgress = false
                 }
-                return
+                return .failure("Search cancelled.")
             }
-            if Task.isCancelled { return }
+            if Task.isCancelled { return .failure("Search cancelled.") }
             let result = await Self.runRipgrep(query: trimmedQuery, rootPath: rootPath)
-            if Task.isCancelled { return }
+            if Task.isCancelled { return .failure("Search cancelled.") }
             await MainActor.run { [weak self] in
                 guard let self, token == self.searchInFilesToken else { return }
                 switch result {
@@ -4646,6 +4693,7 @@ class WorkspaceState: ObservableObject {
                 }
                 self.isSearchInProgress = false
             }
+            return result
         }
     }
 
@@ -5150,6 +5198,16 @@ class WorkspaceState: ObservableObject {
         path.split(separator: "/").contains { $0.hasPrefix(".") }
     }
 
+    nonisolated private static func utf16Offset(forByteOffset offset: Int, in line: String) -> Int? {
+        guard offset >= 0 else { return nil }
+        let utf8 = line.utf8
+        guard let byteIndex = utf8.index(utf8.startIndex, offsetBy: offset, limitedBy: utf8.endIndex) else {
+            return nil
+        }
+        guard let stringIndex = String.Index(byteIndex, within: line) else { return nil }
+        return line.utf16.distance(from: line.utf16.startIndex, to: stringIndex)
+    }
+
     nonisolated private static func runRipgrep(
         query: String,
         rootPath: String
@@ -5183,7 +5241,7 @@ class WorkspaceState: ObservableObject {
             var hitLimit = false
 
             do {
-                for try await line in handle.bytes.lines {
+                lineLoop: for try await line in handle.bytes.lines {
                     if Task.isCancelled { break }
                     guard !line.isEmpty, let lineData = line.data(using: .utf8) else { continue }
                     guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -5193,12 +5251,8 @@ class WorkspaceState: ObservableObject {
                           let path = (data["path"] as? [String: Any])?["text"] as? String,
                           let lineNumber = (data["line_number"] as? NSNumber)?.intValue,
                           let lineText = (data["lines"] as? [String: Any])?["text"] as? String,
-                          let submatches = data["submatches"] as? [[String: Any]],
-                          let firstMatch = submatches.first,
-                          let column = (firstMatch["start"] as? NSNumber)?.intValue
+                          let submatches = data["submatches"] as? [[String: Any]]
                     else { continue }
-                    let matchEnd = (firstMatch["end"] as? NSNumber)?.intValue ?? column + 1
-                    let matchLength = max(1, matchEnd - column)
 
                     let fileURL: URL
                     if path.hasPrefix("/") {
@@ -5208,24 +5262,31 @@ class WorkspaceState: ObservableObject {
                     }
                     let displayPath = relativePath(for: fileURL, rootPath: rootPath)
                     let trimmedLine = lineText.trimmingCharacters(in: .newlines)
-                    let match = SearchMatch(
-                        lineNumber: lineNumber,
-                        column: column + 1,
-                        matchLength: matchLength,
-                        lineText: trimmedLine
-                    )
-                    if let index = indexByPath[path] {
-                        results[index].matches.append(match)
-                    } else {
-                        let result = SearchResult(url: fileURL, displayPath: displayPath, matches: [match])
-                        results.append(result)
-                        indexByPath[path] = results.count - 1
-                    }
-                    matchCount += 1
-                    if matchCount >= Self.maxSearchMatches {
-                        hitLimit = true
-                        process.terminate()
-                        break
+                    for submatch in submatches {
+                        guard let start = (submatch["start"] as? NSNumber)?.intValue else { continue }
+                        let end = (submatch["end"] as? NSNumber)?.intValue ?? start + 1
+                        let startOffset = utf16Offset(forByteOffset: start, in: lineText) ?? start
+                        let endOffset = utf16Offset(forByteOffset: end, in: lineText) ?? end
+                        let matchLength = max(1, endOffset - startOffset)
+                        let match = SearchMatch(
+                            lineNumber: lineNumber,
+                            column: startOffset + 1,
+                            matchLength: matchLength,
+                            lineText: trimmedLine
+                        )
+                        if let index = indexByPath[path] {
+                            results[index].matches.append(match)
+                        } else {
+                            let result = SearchResult(url: fileURL, displayPath: displayPath, matches: [match])
+                            results.append(result)
+                            indexByPath[path] = results.count - 1
+                        }
+                        matchCount += 1
+                        if matchCount >= Self.maxSearchMatches {
+                            hitLimit = true
+                            process.terminate()
+                            break lineLoop
+                        }
                     }
                 }
             } catch {
@@ -5278,7 +5339,7 @@ class WorkspaceState: ObservableObject {
             )
         }
 
-        guard let contents = try? String(contentsOf: url) else {
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
             let line = SearchPreviewLine(number: lineNumber, text: fallbackLine, isMatch: true)
             return SearchPreview(
                 url: url,
@@ -5381,6 +5442,7 @@ class WorkspaceState: ObservableObject {
         } else if resumeRequested && result.resumed == false {
             if chatMessages.isEmpty {
                 chatMessages = Self.initialChatMessages()
+                rebuildDiffPreviewIndex()
             }
         }
     }
@@ -5515,7 +5577,7 @@ class WorkspaceState: ObservableObject {
         if turnDiffs[turnId] == nil && !trimmed.isEmpty {
             ensureTurnOrder(turnId)
             turnDiffs[turnId] = preview.diff
-            updateSessionDiffSnapshot()
+            scheduleSessionDiffRecompute()
         }
         upsertDiffPreview(preview)
     }
@@ -5528,7 +5590,7 @@ class WorkspaceState: ObservableObject {
         turnDiffs[turnId] = diff
         let preview = DiffPreview.fromTurnDiff(turnId: turnId, diff: diff)
         upsertDiffPreview(preview)
-        updateSessionDiffSnapshot()
+        scheduleSessionDiffRecompute()
     }
 
     private func appendStreamingDiff(turnId: String, delta: String) {
@@ -5542,7 +5604,7 @@ class WorkspaceState: ObservableObject {
         streamingTurnDiffs[turnId] = updated
         let preview = DiffPreview.fromStreamingDiff(turnId: turnId, diff: updated)
         upsertDiffPreview(preview)
-        updateSessionDiffSnapshot()
+        scheduleSessionDiffRecompute()
     }
 
     private func ensureTurnOrder(_ turnId: String) {
@@ -5552,6 +5614,9 @@ class WorkspaceState: ObservableObject {
     }
 
     private func updateSessionDiffSnapshot() {
+        sessionDiffComputeTask?.cancel()
+        sessionDiffComputeTask = nil
+        sessionDiffComputeToken += 1
         let parts = turnDiffOrder.compactMap { turnDiffs[$0] ?? streamingTurnDiffs[$0] }
         let combined = parts.joined(separator: "\n\n")
         let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5567,21 +5632,65 @@ class WorkspaceState: ObservableObject {
         )
     }
 
+    private func scheduleSessionDiffRecompute() {
+        sessionDiffComputeTask?.cancel()
+        sessionDiffComputeToken += 1
+        let token = sessionDiffComputeToken
+        let parts = turnDiffOrder.compactMap { turnDiffs[$0] ?? streamingTurnDiffs[$0] }
+        let combined = parts.joined(separator: "\n\n")
+        let trimmed = combined.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            sessionDiffSnapshot = nil
+            sessionDiffComputeTask = nil
+            return
+        }
+        sessionDiffSnapshot = SessionDiffSnapshot(files: [], summary: "", diff: combined)
+        sessionDiffComputeTask = Task.detached(priority: .utility) { [combined] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return }
+            let summary = DiffPreview.summarize(diff: combined)
+            await MainActor.run { [weak self] in
+                guard let self, token == self.sessionDiffComputeToken else { return }
+                self.sessionDiffSnapshot = SessionDiffSnapshot(
+                    files: summary.files,
+                    summary: summary.summary,
+                    diff: combined
+                )
+            }
+        }
+    }
+
     private func upsertDiffPreview(_ preview: DiffPreview) {
-        if let turnId = preview.turnId,
-           let index = chatMessages.lastIndex(where: { message in
-               if case .diffPreview(let existing) = message.kind {
-                   return existing.turnId == turnId
-               }
-               return false
-           }) {
-            var message = chatMessages[index]
-            message.kind = .diffPreview(preview)
-            message.turnId = turnId
-            chatMessages[index] = message
-        } else {
-            let message = ChatMessage(role: .assistant, kind: .diffPreview(preview), turnId: preview.turnId)
-            chatMessages.append(message)
+        if let turnId = preview.turnId {
+            if let index = diffPreviewIndexByTurnId[turnId],
+               index < chatMessages.count,
+               case .diffPreview(let existing) = chatMessages[index].kind,
+               existing.turnId == turnId {
+                var message = chatMessages[index]
+                message.kind = .diffPreview(preview)
+                message.turnId = turnId
+                chatMessages[index] = message
+                diffPreviewIndexByTurnId[turnId] = index
+                return
+            }
+            if let index = chatMessages.lastIndex(where: { message in
+                if case .diffPreview(let existing) = message.kind {
+                    return existing.turnId == turnId
+                }
+                return false
+            }) {
+                var message = chatMessages[index]
+                message.kind = .diffPreview(preview)
+                message.turnId = turnId
+                chatMessages[index] = message
+                diffPreviewIndexByTurnId[turnId] = index
+                return
+            }
+        }
+        let message = ChatMessage(role: .assistant, kind: .diffPreview(preview), turnId: preview.turnId)
+        chatMessages.append(message)
+        if let turnId = preview.turnId {
+            diffPreviewIndexByTurnId[turnId] = chatMessages.count - 1
         }
     }
 
@@ -5737,6 +5846,9 @@ class WorkspaceState: ObservableObject {
     }
 
     private func storeActiveChatSessionState() {
+        sessionDiffComputeTask?.cancel()
+        sessionDiffComputeTask = nil
+        sessionDiffComputeToken += 1
         let session = ensureChatSession(id: activeChatId)
         session.messages = chatMessages
         session.draft = chatDraft
@@ -5758,12 +5870,14 @@ class WorkspaceState: ObservableObject {
         suppressChatHistoryPersistence = true
         chatMessages = session.messages
         suppressChatHistoryPersistence = wasSuppressed
+        rebuildDiffPreviewIndex()
         chatDraft = session.draft
         chatDraftImages = session.draftImages
         isTurnInProgress = session.isTurnInProgress
         activeDiffPreview = session.activeDiffPreview
         activeSessionDiff = session.activeSessionDiff
         activeSkills = session.activeSkills
+        primeSkillInstructionCache()
         sessionDiffSnapshot = session.sessionDiffSnapshot
         turnDiffs = session.turnDiffs
         turnDiffOrder = session.turnDiffOrder
@@ -6003,13 +6117,17 @@ extension WorkspaceState {
         guard !Self.isRunningTests else { return }
         skillRefreshTask?.cancel()
         let root = rootDirectory
-        skillRefreshTask = Task { [weak self] in
-            guard let self else { return }
-            let output = await skillScanner.scan(rootDirectory: root)
-            await MainActor.run {
+        skillRefreshTask = Task.detached(priority: .utility) { [root] in
+            let scanner = SkillScanner()
+            let output = await scanner.scan(rootDirectory: root)
+            if Task.isCancelled { return }
+            let directories = scanner.skillDirectories(rootDirectory: root).map(\.url)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
                 self.skillItems = output.skills
                 self.skillErrors = output.errors
-                let directories = self.skillScanner.skillDirectories(rootDirectory: root).map(\.url)
+                self.skillInstructionCache.removeAll()
+                self.primeSkillInstructionCache()
                 self.setupSkillWatchers(for: directories)
             }
         }
@@ -6019,7 +6137,9 @@ extension WorkspaceState {
         skillWatchers.forEach { $0.invalidate() }
         skillWatchers = directories.compactMap { url in
             DirectoryWatcher(url: url) { [weak self] in
-                self?.refreshSkills(force: true)
+                Task { @MainActor in
+                    self?.refreshSkills(force: true)
+                }
             }
         }
     }
@@ -6088,22 +6208,21 @@ extension WorkspaceState {
             return
         }
         let root = rootDirectory
-        let installer = skillInstaller
-        let confirmScripts: ([URL]) -> Bool = { [weak self] scripts in
-            guard let self else { return false }
+        let confirmScripts: @Sendable ([URL]) -> Bool = { scripts in
             if Thread.isMainThread {
-                return self.confirmSkillScripts(scripts)
+                return WorkspaceState.confirmSkillScripts(scripts)
             }
             return DispatchQueue.main.sync {
-                self.confirmSkillScripts(scripts)
+                WorkspaceState.confirmSkillScripts(scripts)
             }
         }
 
         Task { [weak self] in
             guard let self else { return }
             do {
-                let result = try await Task.detached(priority: .utility) {
-                    try installer.install(
+                let result = try await Task.detached(priority: .utility) { [source, scope, root, confirmScripts] in
+                    let installer = SkillInstaller()
+                    return try installer.install(
                         source: source,
                         scope: scope,
                         rootDirectory: root,
@@ -6204,6 +6323,7 @@ extension WorkspaceState {
             mode: .inline,
             arguments: arguments
         )
+        cacheSkillInstruction(for: active)
         activeSkills.append(active)
         storeActiveChatSessionState()
         showToast("Skill \"\(skill.name)\" activated")
@@ -6245,6 +6365,9 @@ extension WorkspaceState {
                         )
                     ]
                 )
+                if let active = session.activeSkills.first {
+                    cacheSkillInstruction(for: active)
+                }
                 chatSessions[chatId] = session
                 activeChatId = chatId
                 loadChatSessionState(session)
@@ -6268,11 +6391,14 @@ extension WorkspaceState {
 
     func deactivateSkill(_ skill: SkillItem) {
         activeSkills.removeAll { $0.skill.id == skill.id }
+        let prefix = "\(skill.id)::"
+        skillInstructionCache = skillInstructionCache.filter { !($0.key.hasPrefix(prefix)) }
         storeActiveChatSessionState()
     }
 
     func deactivateAllSkills() {
         activeSkills.removeAll()
+        skillInstructionCache.removeAll()
         storeActiveChatSessionState()
     }
 
@@ -6341,7 +6467,7 @@ extension WorkspaceState {
         }
     }
 
-    private func confirmSkillScripts(_ scripts: [URL]) -> Bool {
+    nonisolated private static func confirmSkillScripts(_ scripts: [URL]) -> Bool {
         let list = scripts.map { $0.lastPathComponent }.sorted().joined(separator: "\n• ")
         let alert = NSAlert()
         alert.messageText = "Skill includes scripts"
@@ -6393,10 +6519,27 @@ extension WorkspaceState {
         try? fm.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
     }
 
+    private func primeSkillInstructionCache() {
+        guard !activeSkills.isEmpty else { return }
+        for active in activeSkills {
+            cacheSkillInstruction(for: active)
+        }
+    }
+
+    private func cacheSkillInstruction(for active: ActiveSkill) {
+        guard skillInstructionCache[active.id] == nil else { return }
+        guard let block = renderSkillInstructionBlock(active) else { return }
+        skillInstructionCache[active.id] = block
+    }
+
     private func buildSkillInstructionInputs() -> [UserInput] {
         guard !activeSkills.isEmpty else { return [] }
         return activeSkills.compactMap { active in
+            if let cached = skillInstructionCache[active.id] {
+                return UserInput.text(cached)
+            }
             guard let block = renderSkillInstructionBlock(active) else { return nil }
+            skillInstructionCache[active.id] = block
             return UserInput.text(block)
         }
     }
@@ -6487,7 +6630,7 @@ extension WorkspaceState {
             jjOperations = ops
 
             if let store = jjSnapshotStore {
-                jjSnapshots = (try? store.snapshotsForWorkspace()) ?? []
+                jjSnapshots = (try? await store.snapshotsForWorkspace()) ?? []
             }
         } catch {
             // Silently fail on refresh
@@ -6608,15 +6751,17 @@ extension WorkspaceState {
                 // Record in SQLite
                 let chatSession = activeChatId
                 let messageIndex = chatMessages.count - 1
-                try? jjSnapshotStore?.recordSnapshot(
-                    changeId: newChange.changeId,
-                    commitId: newChange.commitId,
-                    description: "ai: \(summary)",
-                    snapshotType: .aiChange,
-                    chatSessionId: chatSession,
-                    chatMessageIndex: messageIndex,
-                    metadata: metadata
-                )
+                if let store = jjSnapshotStore {
+                    try? await store.recordSnapshot(
+                        changeId: newChange.changeId,
+                        commitId: newChange.commitId,
+                        description: "ai: \(summary)",
+                        snapshotType: .aiChange,
+                        chatSessionId: chatSession,
+                        chatMessageIndex: messageIndex,
+                        metadata: metadata
+                    )
+                }
 
                 // Write git note if enabled
                 if vcsPreferences.gitNotesOnCommit, jjService.detectedVCSType == .jjColocated {
@@ -6654,13 +6799,15 @@ extension WorkspaceState {
                 let newChange = try await jjService.newChange()
                 let metadata = await snapshotOperationMetadata()
 
-                try? jjSnapshotStore?.recordSnapshot(
-                    changeId: newChange.changeId,
-                    commitId: newChange.commitId,
-                    description: "save: \(filename)",
-                    snapshotType: .userSave,
-                    metadata: metadata
-                )
+                if let store = jjSnapshotStore {
+                    try? await store.recordSnapshot(
+                        changeId: newChange.changeId,
+                        commitId: newChange.commitId,
+                        description: "save: \(filename)",
+                        snapshotType: .userSave,
+                        metadata: metadata
+                    )
+                }
 
                 await refreshJJStatus()
             } catch {
@@ -6696,13 +6843,15 @@ extension WorkspaceState {
             _ = try await jjService.newChange()
             let metadata = await snapshotOperationMetadata()
 
-            try? jjSnapshotStore?.recordSnapshot(
-                changeId: "",
-                commitId: nil,
-                description: description,
-                snapshotType: .manualCommit,
-                metadata: metadata
-            )
+            if let store = jjSnapshotStore {
+                try? await store.recordSnapshot(
+                    changeId: "",
+                    commitId: nil,
+                    description: description,
+                    snapshotType: .manualCommit,
+                    metadata: metadata
+                )
+            }
 
             await refreshJJStatus()
             showToast("Committed")
@@ -6772,10 +6921,7 @@ extension WorkspaceState {
     func openFileFromJJPanel(_ path: String) {
         guard let rootDirectory else { return }
         let url = canonicalFileURL(rootDirectory.appendingPathComponent(path))
-        if !openFiles.contains(url) {
-            openFiles.append(url)
-        }
-        selectedFileURL = url
+        selectFile(url)
     }
 
     func revertJJFile(_ path: String) async {
@@ -6827,14 +6973,13 @@ extension WorkspaceState {
     // MARK: - Snapshot Actions
 
     func revertToSnapshot(_ snapshot: Snapshot) async {
-        guard let jjService, jjService.isAvailable else { return }
-        do {
-            try await jjService.undo()
-            await refreshJJStatus()
-            showToast("Reverted to snapshot")
-        } catch {
-            appendErrorMessage("Revert failed: \(error.localizedDescription)")
+        let isLatest: Bool
+        if let store = jjSnapshotStore, let latest = try? await store.latestSnapshot() {
+            isLatest = latest.id == snapshot.id || latest.changeId == snapshot.changeId
+        } else {
+            isLatest = true
         }
+        await revertJJSnapshot(snapshot, isLatest: isLatest)
     }
 
     func viewSnapshotDiff(_ snapshot: Snapshot) async {
@@ -6855,8 +7000,7 @@ extension WorkspaceState {
 
     func navigateToSnapshotChat(_ snapshot: Snapshot) {
         if let sessionId = snapshot.chatSessionId {
-            // Switch to the chat session
-            activeChatId = sessionId
+            openChat(id: sessionId, title: chatSessions[sessionId]?.title, select: true)
         }
     }
 
@@ -6893,7 +7037,7 @@ extension WorkspaceState {
 
     // MARK: - Revert Chat Message (JJ)
 
-    func jjRevertActionInfo(_ message: ChatMessage) -> JJRevertActionInfo? {
+    func jjRevertActionInfo(_ message: ChatMessage) async -> JJRevertActionInfo? {
         guard jjService?.isAvailable == true else { return nil }
         guard message.role == .assistant else { return nil }
         guard message.turnId != nil else { return nil }
@@ -6902,9 +7046,9 @@ extension WorkspaceState {
         if let store = jjSnapshotStore,
            let sessionId = activeChatId as String?,
            let idx = chatMessages.firstIndex(where: { $0.id == message.id }) {
-            let snapshot = try? store.snapshotForMessage(sessionId: sessionId, messageIndex: idx)
+            let snapshot = try? await store.snapshotForMessage(sessionId: sessionId, messageIndex: idx)
             if let snapshot {
-                let latest = try? store.latestSnapshot()
+                let latest = try? await store.latestSnapshot()
                 let isLatest = latest == nil || latest?.id == snapshot.id || latest?.changeId == snapshot.changeId
                 return JJRevertActionInfo(snapshot: snapshot, isLatest: isLatest)
             }
@@ -6912,12 +7056,12 @@ extension WorkspaceState {
         return nil
     }
 
-    func canRevertJJMessage(_ message: ChatMessage) -> Bool {
-        jjRevertActionInfo(message) != nil
+    func canRevertJJMessage(_ message: ChatMessage) async -> Bool {
+        await jjRevertActionInfo(message) != nil
     }
 
     func revertJJMessage(_ message: ChatMessage) async {
-        guard let info = jjRevertActionInfo(message) else { return }
+        guard let info = await jjRevertActionInfo(message) else { return }
         await revertJJSnapshot(info.snapshot, isLatest: info.isLatest)
     }
 
