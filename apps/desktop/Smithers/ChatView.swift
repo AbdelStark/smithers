@@ -402,6 +402,7 @@ enum CommandExecutionStatus: Hashable {
 
 struct ChatView: View {
     @ObservedObject var workspace: WorkspaceState
+    var onFocusChange: ((Bool) -> Void)? = nil
     @FocusState private var inputFocused: Bool
     @State private var selectedImage: ChatImage?
     @State private var isDropTargeted = false
@@ -519,6 +520,9 @@ struct ChatView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 inputFocused = true
             }
+        }
+        .onChange(of: inputFocused) { _, newValue in
+            onFocusChange?(newValue)
         }
         .sheet(item: $workspace.activeDiffPreview) { preview in
             DiffViewer(
