@@ -186,7 +186,8 @@ final class CodexService: ObservableObject {
         let params = ThreadStartParams(
             cwd: cwd,
             approvalPolicy: .never,
-            sandbox: .workspaceWrite
+            sandbox: .workspaceWrite,
+            developerInstructions: SmithersInstructions.developerInstructions
         )
         let response: ThreadStartResponse = try await transport.sendRequest(
             method: "thread/start",
@@ -205,7 +206,8 @@ final class CodexService: ObservableObject {
             threadId: threadId,
             cwd: cwd,
             approvalPolicy: .never,
-            sandbox: .workspaceWrite
+            sandbox: .workspaceWrite,
+            developerInstructions: SmithersInstructions.developerInstructions
         )
         let response: ThreadForkResponse = try await transport.sendRequest(
             method: "thread/fork",
@@ -375,7 +377,8 @@ final class CodexService: ObservableObject {
         let params = ThreadStartParams(
             cwd: cwd,
             approvalPolicy: .never,
-            sandbox: .workspaceWrite
+            sandbox: .workspaceWrite,
+            developerInstructions: SmithersInstructions.developerInstructions
         )
         let response: ThreadStartResponse = try await transport.sendRequest(
             method: "thread/start",
@@ -392,7 +395,8 @@ final class CodexService: ObservableObject {
             threadId: threadId,
             cwd: cwd,
             approvalPolicy: .never,
-            sandbox: .workspaceWrite
+            sandbox: .workspaceWrite,
+            developerInstructions: SmithersInstructions.developerInstructions
         )
         let response: ThreadResumeResponse = try await transport.sendRequest(
             method: "thread/resume",
@@ -482,6 +486,7 @@ struct ThreadStartParams: Encodable {
     let cwd: String?
     let approvalPolicy: ApprovalPolicy?
     let sandbox: SandboxMode?
+    let developerInstructions: String?
 }
 
 struct ThreadStartResponse: Decodable {
@@ -493,6 +498,7 @@ struct ThreadResumeParams: Encodable {
     let cwd: String?
     let approvalPolicy: ApprovalPolicy?
     let sandbox: SandboxMode?
+    let developerInstructions: String?
 }
 
 struct ThreadResumeResponse: Decodable {
@@ -504,6 +510,7 @@ struct ThreadForkParams: Encodable {
     let cwd: String?
     let approvalPolicy: ApprovalPolicy?
     let sandbox: SandboxMode?
+    let developerInstructions: String?
 }
 
 struct ThreadForkResponse: Decodable {
@@ -622,6 +629,25 @@ struct LoginApiKeyParams: Encodable {
 
 struct LoginApiKeyResponse: Decodable {
     let type: String
+}
+
+enum SmithersInstructions {
+    static let developerInstructions = """
+        You are running inside Smithers, a native macOS IDE. You can control the IDE with the `smithers-ctl` CLI:
+
+        Commands:
+          smithers-ctl open <path> [--line N] [--column N] [+N[:C]]
+          smithers-ctl terminal [--command CMD] [--cwd PATH] | terminal run <cmd>
+          smithers-ctl diff show --content <diff> [--title TITLE] [--file PATH]
+          smithers-ctl overlay --type <chat|progress|panel> --message <text> [--title TITLE] [--position <bottom|center|top>] [--duration N] [--percent N]
+          smithers-ctl dismiss-overlay [--id ID]
+          smithers-ctl webview open <url> [--title TITLE]
+          smithers-ctl webview close <tab-id>
+          smithers-ctl webview eval <tab-id> --js <script>
+          smithers-ctl webview url <tab-id>
+
+        Use these to open files, show diffs, display progress, run terminals, and embed webviews in the IDE.
+        """
 }
 
 enum ApprovalPolicy: String, Encodable {
