@@ -759,7 +759,10 @@ export const ChatView: Component<{ onRunWorkflow?: (preselect?: string) => void 
               type="number"
               min="1"
               value={forkFanout()}
-              onInput={(e) => setForkFanout(Math.max(1, Number(e.currentTarget.value)))}
+              onInput={(e) => {
+                const raw = Number(e.currentTarget.value);
+                setForkFanout(Number.isFinite(raw) ? Math.max(1, raw) : 1);
+              }}
             />
             <Show when={forkIncludeCode() && forkCodeMode() === "sandboxed"}>
               <div class="text-[10px] text-subtle mt-1">
@@ -821,7 +824,13 @@ export const ChatView: Component<{ onRunWorkflow?: (preselect?: string) => void 
                 Cancel
               </button>
               <button
-                class="text-xs px-3 py-1 rounded border border-accent bg-accent/20 text-accent hover:bg-accent/30"
+                class={cn(
+                  "text-xs px-3 py-1 rounded border",
+                  mergeSelection().size === 0
+                    ? "border-border text-subtle bg-panel-2 cursor-not-allowed"
+                    : "border-accent bg-accent/20 text-accent hover:bg-accent/30",
+                )}
+                disabled={mergeSelection().size === 0}
                 onClick={applyMerge}
               >
                 Apply changes
