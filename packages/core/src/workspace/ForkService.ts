@@ -295,7 +295,9 @@ export class ForkService {
       applied.push(change.path);
     }
 
-    this.markDirty();
+    if (targetRoot === this.workspace.getRoot()) {
+      this.markDirty();
+    }
     this.emitMergeProgress?.({ mergeId, status: "done" });
     return { ok: true, appliedFiles: applied };
   }
