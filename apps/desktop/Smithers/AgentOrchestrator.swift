@@ -13,6 +13,8 @@ class AgentOrchestrator: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var queueProcessingTask: Task<Void, Never>?
     private var agentCodexServices: [String: CodexService] = [:]
+    private var agentEventTasks: [String: Task<Void, Never>] = [:]
+    private var agentActiveTurnIds: [String: String] = [:]
     private var preferences: VCSPreferences
 
     init(mainWorkspace: URL, jjService: JJService, snapshotStore: JJSnapshotStore, preferences: VCSPreferences) {
@@ -65,7 +67,7 @@ class AgentOrchestrator: ObservableObject {
         agentCodexServices[slug] = codexService
 
         // Record in SQLite
-        try snapshotStore.recordAgentWorkspace(AgentWorkspaceRecord(
+        try await snapshotStore.recordAgentWorkspace(AgentWorkspaceRecord(
             id: slug,
             workspacePath: workspacePath.path,
             mainWorkspacePath: mainWorkspace.path,
@@ -77,14 +79,17 @@ class AgentOrchestrator: ObservableObject {
             createdAt: Date()
         ))
 
-        try snapshotStore.logMergeQueueAction(agentId: slug, action: "spawned", details: task)
+        try await snapshotStore.logMergeQueueAction(agentId: slug, action: "spawned", details: task)
 
         // Start the codex service
         let threadResult = try await codexService.start(cwd: workspacePath.path)
         _ = threadResult
 
+        startAgentEventListener(agentId: slug, codexService: codexService)
+
         // Send the task
-        try await codexService.sendMessage(task, images: [])
+        let turnId = try await codexService.sendMessage(task, images: [])
+        agentActiveTurnIds[slug] = turnId
 
         // Start polling if not already
         startPollingIfNeeded()
@@ -95,11 +100,7 @@ class AgentOrchestrator: ObservableObject {
     func cancelAgent(_ agent: AgentWorkspace) async throws {
         guard let idx = activeAgents.firstIndex(where: { $0.id == agent.id }) else { return }
 
-        // Stop codex service
-        if let codex = agentCodexServices[agent.id] {
-            codex.stop()
-            agentCodexServices.removeValue(forKey: agent.id)
-        }
+        stopAgentService(agentId: agent.id)
 
         // Update status
         activeAgents[idx].status = .cancelled
@@ -111,8 +112,8 @@ class AgentOrchestrator: ObservableObject {
         try? FileManager.default.removeItem(at: agent.directory)
 
         // Update SQLite
-        try? snapshotStore.updateAgentStatus(id: agent.id, status: .cancelled)
-        try? snapshotStore.logMergeQueueAction(agentId: agent.id, action: "cancelled")
+        try? await snapshotStore.updateAgentStatus(id: agent.id, status: .cancelled)
+        try? await snapshotStore.logMergeQueueAction(agentId: agent.id, action: "cancelled")
 
         // Remove from merge queue
         mergeQueue.remove(agentId: agent.id)
@@ -149,8 +150,10 @@ class AgentOrchestrator: ObservableObject {
         mergeQueue.enqueue(entry)
         activeAgents[idx].status = .inQueue
 
-        try? snapshotStore.updateAgentStatus(id: agent.id, status: .inQueue)
-        try? snapshotStore.logMergeQueueAction(agentId: agent.id, action: "enqueued")
+        try? await snapshotStore.updateAgentStatus(id: agent.id, status: .inQueue)
+        try? await snapshotStore.logMergeQueueAction(agentId: agent.id, action: "enqueued")
+
+        stopAgentService(agentId: agent.id)
 
         // Auto-process queue if enabled
         if preferences.mergeQueueAutoRun {
@@ -177,7 +180,7 @@ class AgentOrchestrator: ObservableObject {
         let agentId = entry.agentId
 
         // Step 1: Create merge revision
-        try? snapshotStore.logMergeQueueAction(agentId: agentId, action: "merge_started")
+        try? await snapshotStore.logMergeQueueAction(agentId: agentId, action: "merge_started")
 
         do {
             // Create a merge commit: jj new trunk() <change>
@@ -190,7 +193,7 @@ class AgentOrchestrator: ObservableObject {
             let status = try await jjService.status()
             if !status.conflicts.isEmpty {
                 mergeQueue.updateStatus(agentId: agentId, status: .conflicted)
-                try? snapshotStore.logMergeQueueAction(
+                try? await snapshotStore.logMergeQueueAction(
                     agentId: agentId,
                     action: "conflicted",
                     details: status.conflicts.joined(separator: ", ")
@@ -199,7 +202,7 @@ class AgentOrchestrator: ObservableObject {
                 if let idx = activeAgents.firstIndex(where: { $0.id == agentId }) {
                     activeAgents[idx].status = .conflicted
                 }
-                try? snapshotStore.updateAgentStatus(id: agentId, status: .conflicted)
+                try? await snapshotStore.updateAgentStatus(id: agentId, status: .conflicted)
 
                 // Undo the failed merge
                 try? await jjService.undo()
@@ -209,15 +212,15 @@ class AgentOrchestrator: ObservableObject {
             // Step 3: Run tests if configured
             if let testCommand = preferences.mergeQueueTestCommand ?? mergeQueue.testCommand {
                 mergeQueue.updateStatus(agentId: agentId, status: .testing)
-                try? snapshotStore.logMergeQueueAction(agentId: agentId, action: "test_started")
+                try? await snapshotStore.logMergeQueueAction(agentId: agentId, action: "test_started")
 
                 let testResult = await runTestCommand(testCommand)
 
                 if testResult.passed {
-                    try? snapshotStore.logMergeQueueAction(agentId: agentId, action: "test_passed")
+                    try? await snapshotStore.logMergeQueueAction(agentId: agentId, action: "test_passed")
                 } else {
                     mergeQueue.updateStatus(agentId: agentId, status: .testFailed)
-                    try? snapshotStore.logMergeQueueAction(
+                    try? await snapshotStore.logMergeQueueAction(
                         agentId: agentId,
                         action: "test_failed",
                         details: testResult.output
@@ -226,7 +229,7 @@ class AgentOrchestrator: ObservableObject {
                     if let idx = activeAgents.firstIndex(where: { $0.id == agentId }) {
                         activeAgents[idx].status = .failed
                     }
-                    try? snapshotStore.updateAgentStatus(id: agentId, status: .failed, testOutput: testResult.output)
+                    try? await snapshotStore.updateAgentStatus(id: agentId, status: .failed, testOutput: testResult.output)
 
                     // Undo the failed merge
                     try? await jjService.undo()
@@ -236,12 +239,12 @@ class AgentOrchestrator: ObservableObject {
 
             // Step 4: Land the change
             mergeQueue.updateStatus(agentId: agentId, status: .landed)
-            try? snapshotStore.logMergeQueueAction(agentId: agentId, action: "landed")
+            try? await snapshotStore.logMergeQueueAction(agentId: agentId, action: "landed")
 
             if let idx = activeAgents.firstIndex(where: { $0.id == agentId }) {
                 activeAgents[idx].status = .merged
             }
-            try? snapshotStore.updateAgentStatus(id: agentId, status: .merged)
+            try? await snapshotStore.updateAgentStatus(id: agentId, status: .merged)
 
             // Clean up workspace
             try? await jjService.workspaceForget(name: agentId)
@@ -250,14 +253,11 @@ class AgentOrchestrator: ObservableObject {
             }
 
             // Stop codex service
-            if let codex = agentCodexServices[agentId] {
-                codex.stop()
-                agentCodexServices.removeValue(forKey: agentId)
-            }
+            stopAgentService(agentId: agentId)
 
         } catch {
             mergeQueue.updateStatus(agentId: agentId, status: .testFailed)
-            try? snapshotStore.logMergeQueueAction(
+            try? await snapshotStore.logMergeQueueAction(
                 agentId: agentId,
                 action: "merge_failed",
                 details: error.localizedDescription
@@ -265,7 +265,7 @@ class AgentOrchestrator: ObservableObject {
             if let idx = activeAgents.firstIndex(where: { $0.id == agentId }) {
                 activeAgents[idx].status = .failed
             }
-            try? snapshotStore.updateAgentStatus(id: agentId, status: .failed)
+            try? await snapshotStore.updateAgentStatus(id: agentId, status: .failed)
         }
     }
 
@@ -287,22 +287,20 @@ class AgentOrchestrator: ObservableObject {
     }
 
     func pollAgentStatus() async {
-        for i in activeAgents.indices {
-            guard activeAgents[i].status == .running else { continue }
+        let snapshot = activeAgents
+        for agent in snapshot where agent.status == .running {
+            let agentId = agent.id
 
-            let agentJJ = JJService(workingDirectory: activeAgents[i].directory)
+            let agentJJ = JJService(workingDirectory: agent.directory)
             let _ = agentJJ.detectVCS()
 
             do {
                 let files = try await agentJJ.diffSummary()
-                activeAgents[i].filesChanged = files
+                if let idx = activeAgents.firstIndex(where: { $0.id == agentId }) {
+                    activeAgents[idx].filesChanged = files
+                }
             } catch {
                 // Agent workspace may not be ready yet
-            }
-
-            // Check if the codex service is still active
-            if let codex = agentCodexServices[activeAgents[i].id], !codex.isRunning {
-                await agentCompleted(activeAgents[i])
             }
         }
 
@@ -409,6 +407,66 @@ class AgentOrchestrator: ObservableObject {
                 )
             }
         }.value
+    }
+
+    private func startAgentEventListener(agentId: String, codexService: CodexService) {
+        agentEventTasks[agentId]?.cancel()
+        agentEventTasks[agentId] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.agentEventTasks[agentId] = nil
+            }
+            for await event in codexService.events {
+                await self.handleAgentEvent(event, agentId: agentId)
+            }
+        }
+    }
+
+    private func handleAgentEvent(_ event: CodexEvent, agentId: String) async {
+        func matchesTurn(_ turnId: String) -> Bool {
+            if agentActiveTurnIds[agentId] == nil {
+                agentActiveTurnIds[agentId] = turnId
+                return true
+            }
+            return agentActiveTurnIds[agentId] == turnId
+        }
+
+        switch event {
+        case .turnStarted(let turnId):
+            _ = matchesTurn(turnId)
+        case .turnCompleted(let turnId, let status):
+            guard matchesTurn(turnId) else { return }
+            agentActiveTurnIds[agentId] = nil
+            if status == "completed" {
+                if let agent = activeAgents.first(where: { $0.id == agentId }) {
+                    await agentCompleted(agent)
+                }
+            } else {
+                await markAgentFailed(agentId: agentId, reason: status)
+            }
+        case .error(let message):
+            await markAgentFailed(agentId: agentId, reason: message)
+        default:
+            break
+        }
+    }
+
+    private func markAgentFailed(agentId: String, reason: String?) async {
+        guard let idx = activeAgents.firstIndex(where: { $0.id == agentId }) else { return }
+        activeAgents[idx].status = .failed
+        try? await snapshotStore.updateAgentStatus(id: agentId, status: .failed, testOutput: reason)
+        try? await snapshotStore.logMergeQueueAction(agentId: agentId, action: "failed", details: reason)
+        stopAgentService(agentId: agentId)
+    }
+
+    private func stopAgentService(agentId: String) {
+        if let codex = agentCodexServices[agentId] {
+            codex.stop()
+            agentCodexServices.removeValue(forKey: agentId)
+        }
+        agentEventTasks[agentId]?.cancel()
+        agentEventTasks.removeValue(forKey: agentId)
+        agentActiveTurnIds.removeValue(forKey: agentId)
     }
 }
 
