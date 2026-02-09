@@ -54,7 +54,7 @@ final class GhosttyFrameScheduler {
         let now = CACurrentMediaTime()
         os_unfair_lock_lock(&lock)
         lastActivityTime = now
-        startDisplayLinkLocked()
+        updateDisplayLinkStateLocked()
         os_unfair_lock_unlock(&lock)
     }
 
@@ -86,15 +86,25 @@ final class GhosttyFrameScheduler {
             refreshHz = maxFPS
         }
         lastTickTime = 0
+        lastPresentTime = 0
+        averageFrameInterval = activeIntervalLocked()
         os_unfair_lock_unlock(&lock)
     }
 
     func repeatThrottleInterval(at timestamp: TimeInterval) -> TimeInterval {
         os_unfair_lock_lock(&lock)
         let idle = timestamp - lastActivityTime > idleDelay
-        let targetInterval = idle ? (1.0 / idleFPS) : activeIntervalLocked()
+        let idleInterval = 1.0 / idleFPS
+        let activeInterval = activeIntervalLocked()
         let slow = averageFrameInterval >= slowFrameThreshold
-        let interval = (idle || slow) ? targetInterval : 0
+        let interval: TimeInterval
+        if idle {
+            interval = max(idleInterval, slow ? averageFrameInterval : 0)
+        } else if slow {
+            interval = max(activeInterval, averageFrameInterval)
+        } else {
+            interval = 0
+        }
         os_unfair_lock_unlock(&lock)
         return interval
     }
@@ -150,10 +160,11 @@ final class GhosttyFrameScheduler {
     private func finishDraw(duration: CFTimeInterval) {
         os_unfair_lock_lock(&lock)
         drawScheduled = false
-        let frameInterval = lastPresentTime > 0 ? max(0, CACurrentMediaTime() - lastPresentTime) : duration
+        let now = CACurrentMediaTime()
+        let frameInterval = lastPresentTime > 0 ? max(0, now - lastPresentTime) : duration
         if frameInterval > 0 {
             averageFrameInterval = (averageFrameInterval * 0.9) + (frameInterval * 0.1)
-            lastPresentTime = CACurrentMediaTime()
+            lastPresentTime = now
         }
         if !pendingRender {
             updateDisplayLinkStateLocked()
@@ -194,12 +205,20 @@ final class GhosttyFrameScheduler {
     private func updateDisplayLinkStateLocked() {
         guard isVisible, !isOccluded else {
             stopDisplayLink()
+            resetTimingLocked()
             return
         }
         if pendingRender || drawScheduled {
             startDisplayLinkLocked()
         } else {
             stopDisplayLink()
+            resetTimingLocked()
         }
+    }
+
+    private func resetTimingLocked() {
+        lastTickTime = 0
+        lastPresentTime = 0
+        averageFrameInterval = activeIntervalLocked()
     }
 }
