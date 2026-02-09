@@ -2,16 +2,16 @@ import Foundation
 
 @MainActor
 final class SmithersCtlInterpreter {
-    struct Result {
+    struct SmithersCtlResult {
         let output: String
         let exitCode: Int
 
-        static func ok(_ output: String = "") -> Result {
-            Result(output: output, exitCode: 0)
+        static func ok(_ output: String = "") -> SmithersCtlResult {
+            SmithersCtlResult(output: output, exitCode: 0)
         }
 
-        static func error(_ message: String) -> Result {
-            Result(output: message, exitCode: 1)
+        static func error(_ message: String) -> SmithersCtlResult {
+            SmithersCtlResult(output: message, exitCode: 1)
         }
     }
 
@@ -21,7 +21,7 @@ final class SmithersCtlInterpreter {
         self.workspace = workspace
     }
 
-    func dispatch(commandLine: String, cwd: String?) async -> Result {
+    func dispatch(commandLine: String, cwd: String?) async -> SmithersCtlResult {
         let tokens = Self.tokenize(commandLine)
         guard !tokens.isEmpty else {
             return .error("smithers-ctl: missing command")
@@ -57,7 +57,7 @@ final class SmithersCtlInterpreter {
         }
     }
 
-    private func handleOpen(args: [String], cwd: String?) -> Result {
+    private func handleOpen(args: [String], cwd: String?) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         var path: String?
         var line: Int?
@@ -114,20 +114,18 @@ final class SmithersCtlInterpreter {
         return .ok("opened \(workspace.displayPath(for: url))")
     }
 
-    private func handleTerminal(args: [String], cwd: String?) -> Result {
+    private func handleTerminal(args: [String], cwd: String?) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         var command: String?
         var workingDirectory: String?
-        var index = 0
         var commandParts: [String] = []
-
-        if args.first == "run" {
-            commandParts = Array(args.dropFirst())
-            index = args.count
-        }
-
+        var index = 0
         while index < args.count {
             let arg = args[index]
+            if arg == "run", command == nil, commandParts.isEmpty {
+                index += 1
+                continue
+            }
             if arg == "--command", index + 1 < args.count {
                 command = args[index + 1]
                 index += 2
@@ -163,7 +161,7 @@ final class SmithersCtlInterpreter {
         return .ok(terminalURL.absoluteString)
     }
 
-    private func handleDiff(args: [String]) -> Result {
+    private func handleDiff(args: [String]) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         var remaining = args
         if remaining.first == "show" {
@@ -219,7 +217,7 @@ final class SmithersCtlInterpreter {
         return .ok("opened diff")
     }
 
-    private func handleOverlay(args: [String]) -> Result {
+    private func handleOverlay(args: [String]) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         var type: OverlayType = .chat
         var message: String?
@@ -296,7 +294,7 @@ final class SmithersCtlInterpreter {
         return .ok(id)
     }
 
-    private func handleDismissOverlay(args: [String]) -> Result {
+    private func handleDismissOverlay(args: [String]) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         var overlayId: String?
         if let first = args.first, !first.hasPrefix("--") {
@@ -315,7 +313,7 @@ final class SmithersCtlInterpreter {
         return .ok("dismissed overlay")
     }
 
-    private func handleWebview(args: [String]) async -> Result {
+    private func handleWebview(args: [String]) async -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         guard !args.isEmpty else { return .error("smithers-ctl webview: missing subcommand") }
 
@@ -338,7 +336,7 @@ final class SmithersCtlInterpreter {
         }
     }
 
-    private func handleWebviewOpen(args: [String]) -> Result {
+    private func handleWebviewOpen(args: [String]) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         guard let urlString = args.first else {
             return .error("smithers-ctl webview open: missing <url>")
@@ -360,16 +358,16 @@ final class SmithersCtlInterpreter {
         return .ok(tabId.absoluteString)
     }
 
-    private func handleWebviewClose(args: [String]) -> Result {
+    private func handleWebviewClose(args: [String]) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         guard let idString = args.first, let id = URL(string: idString) else {
             return .error("smithers-ctl webview close: missing <tab-id>")
         }
-        workspace.closeWebview(id)
+        workspace.closeFile(id)
         return .ok("closed webview")
     }
 
-    private func handleWebviewEval(args: [String]) async -> Result {
+    private func handleWebviewEval(args: [String]) async -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         guard let idString = args.first, let id = URL(string: idString) else {
             return .error("smithers-ctl webview eval: missing <tab-id>")
@@ -395,7 +393,7 @@ final class SmithersCtlInterpreter {
         }
     }
 
-    private func handleWebviewURL(args: [String]) -> Result {
+    private func handleWebviewURL(args: [String]) -> SmithersCtlResult {
         guard let workspace else { return .error("smithers-ctl: no workspace") }
         guard let idString = args.first, let id = URL(string: idString) else {
             return .error("smithers-ctl webview url: missing <tab-id>")
