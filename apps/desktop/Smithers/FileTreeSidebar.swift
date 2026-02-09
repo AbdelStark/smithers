@@ -51,23 +51,6 @@ struct FileTreeSidebar: View {
     }
 }
 
-private func iconForFile(_ name: String) -> String {
-    let ext = (name as NSString).pathExtension.lowercased()
-    switch ext {
-    case "swift": return "swift"
-    case "py": return "text.page"
-    case "js", "ts", "jsx", "tsx": return "curlybraces"
-    case "json": return "curlybraces.square"
-    case "md", "txt", "readme": return "doc.plaintext"
-    case "yml", "yaml", "toml": return "gearshape"
-    case "png", "jpg", "jpeg", "gif", "svg", "webp", "ico": return "photo"
-    case "html", "css": return "globe"
-    case "sh", "zsh", "bash": return "terminal"
-    case "zip", "tar", "gz": return "doc.zipper"
-    case "resolved": return "lock"
-    default: return "doc.text"
-    }
-}
 
 struct FileTreeRow: View {
     let item: FileItem

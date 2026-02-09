@@ -477,7 +477,7 @@ struct TabBarItem: View {
     }
 }
 
-private func iconForFile(_ name: String) -> String {
+func iconForFile(_ name: String) -> String {
     let ext = (name as NSString).pathExtension.lowercased()
     switch ext {
     case "swift": return "swift"
