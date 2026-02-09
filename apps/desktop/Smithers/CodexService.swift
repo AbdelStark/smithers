@@ -54,9 +54,10 @@ final class CodexService: ObservableObject {
         eventContinuation = continuation!
     }
 
-    func start(cwd: String) async throws {
+    func start(cwd: String, resumeThreadId: String? = nil) async throws -> ThreadStartResult {
         if isRunning {
-            return
+            guard let threadId else { throw ServiceError.threadUnavailable }
+            return ThreadStartResult(threadId: threadId, restoredThread: nil, resumed: false)
         }
 
         let binaryURL = try locateCodexBinary()
@@ -81,7 +82,20 @@ final class CodexService: ObservableObject {
         }
 
         try await initializeSession()
-        try await startThread(cwd: cwd)
+        if let resumeThreadId {
+            do {
+                let thread = try await resumeThread(threadId: resumeThreadId, cwd: cwd)
+                return ThreadStartResult(threadId: thread.id, restoredThread: thread, resumed: true)
+            } catch {
+                try await startThread(cwd: cwd)
+                guard let threadId else { throw ServiceError.threadUnavailable }
+                return ThreadStartResult(threadId: threadId, restoredThread: nil, resumed: false)
+            }
+        } else {
+            try await startThread(cwd: cwd)
+            guard let threadId else { throw ServiceError.threadUnavailable }
+            return ThreadStartResult(threadId: threadId, restoredThread: nil, resumed: false)
+        }
     }
 
     func stop() {
@@ -129,6 +143,24 @@ final class CodexService: ObservableObject {
             params: params,
             responseType: LoginApiKeyResponse.self
         )
+    }
+
+    func startNewThread(cwd: String) async throws -> String {
+        guard let transport, isRunning else { throw ServiceError.notRunning }
+
+        let params = ThreadStartParams(
+            cwd: cwd,
+            approvalPolicy: .never,
+            sandbox: .workspaceWrite
+        )
+        let response: ThreadStartResponse = try await transport.sendRequest(
+            method: "thread/start",
+            params: params,
+            responseType: ThreadStartResponse.self
+        )
+        threadId = response.thread.id
+        activeTurnId = nil
+        return response.thread.id
     }
 
     private func handleIncoming(_ incoming: JSONRPCTransport.Incoming) async {
@@ -244,6 +276,25 @@ final class CodexService: ObservableObject {
         threadId = response.thread.id
     }
 
+    private func resumeThread(threadId: String, cwd: String) async throws -> ThreadSnapshot {
+        guard let transport else { throw ServiceError.notRunning }
+
+        let params = ThreadResumeParams(
+            threadId: threadId,
+            cwd: cwd,
+            approvalPolicy: .never,
+            sandbox: .workspaceWrite
+        )
+        let response: ThreadResumeResponse = try await transport.sendRequest(
+            method: "thread/resume",
+            params: params,
+            responseType: ThreadResumeResponse.self
+        )
+        self.threadId = response.thread.id
+        activeTurnId = nil
+        return response.thread
+    }
+
     private func locateCodexBinary() throws -> URL {
         let fm = FileManager.default
         if let overridePath = ProcessInfo.processInfo.environment["SMITHERS_CODEX_APP_SERVER_PATH"],
@@ -293,6 +344,12 @@ final class CodexService: ObservableObject {
 
 struct EmptyResponse: Codable {}
 
+struct ThreadStartResult {
+    let threadId: String
+    let restoredThread: ThreadSnapshot?
+    let resumed: Bool
+}
+
 struct InitializeParams: Encodable {
     let clientInfo: ClientInfo
     let capabilities: InitializeCapabilities?
@@ -322,8 +379,30 @@ struct ThreadStartResponse: Decodable {
     let thread: ThreadInfo
 }
 
+struct ThreadResumeParams: Encodable {
+    let threadId: String
+    let cwd: String?
+    let approvalPolicy: ApprovalPolicy?
+    let sandbox: SandboxMode?
+}
+
+struct ThreadResumeResponse: Decodable {
+    let thread: ThreadSnapshot
+}
+
 struct ThreadInfo: Decodable {
     let id: String
+}
+
+struct ThreadSnapshot: Decodable {
+    let id: String
+    let turns: [TurnSnapshot]
+}
+
+struct TurnSnapshot: Decodable {
+    let id: String
+    let status: String
+    let items: [ThreadItem]
 }
 
 struct TurnStartParams: Encodable {
@@ -425,8 +504,33 @@ struct UserInput: Encodable {
     }
 }
 
+enum UserInputPayload: Decodable {
+    case text(String)
+    case other
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case text
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = (try? container.decode(String.self, forKey: .type)) ?? ""
+        switch type {
+        case "text":
+            let text = (try? container.decode(String.self, forKey: .text)) ?? ""
+            self = .text(text)
+        default:
+            self = .other
+        }
+    }
+}
+
 enum ThreadItem: Decodable {
+    case userMessage(UserMessageItem)
     case agentMessage(AgentMessageItem)
+    case plan(PlanItem)
+    case reasoning(ReasoningItem)
     case commandExecution(CommandExecutionItem)
     case fileChange(FileChangeItem)
     case other
@@ -435,9 +539,12 @@ enum ThreadItem: Decodable {
         case type
         case id
         case text
+        case content
+        case summary
         case command
         case cwd
         case exitCode
+        case aggregatedOutput
         case changes
         case status
     }
@@ -446,16 +553,38 @@ enum ThreadItem: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = (try? container.decode(String.self, forKey: .type)) ?? ""
         switch type {
+        case "userMessage":
+            let id = try container.decode(String.self, forKey: .id)
+            let content = (try? container.decode([UserInputPayload].self, forKey: .content)) ?? []
+            self = .userMessage(UserMessageItem(id: id, content: content))
         case "agentMessage":
             let id = try container.decode(String.self, forKey: .id)
             let text = (try? container.decode(String.self, forKey: .text)) ?? ""
             self = .agentMessage(AgentMessageItem(id: id, text: text))
+        case "plan":
+            let id = try container.decode(String.self, forKey: .id)
+            let text = (try? container.decode(String.self, forKey: .text)) ?? ""
+            self = .plan(PlanItem(id: id, text: text))
+        case "reasoning":
+            let id = try container.decode(String.self, forKey: .id)
+            let summary = (try? container.decode([String].self, forKey: .summary)) ?? []
+            let content = (try? container.decode([String].self, forKey: .content)) ?? []
+            self = .reasoning(ReasoningItem(id: id, summary: summary, content: content))
         case "commandExecution":
             let id = try container.decode(String.self, forKey: .id)
             let command = try container.decode(String.self, forKey: .command)
             let cwd = try container.decode(String.self, forKey: .cwd)
             let exitCode = try? container.decode(Int.self, forKey: .exitCode)
-            self = .commandExecution(CommandExecutionItem(id: id, command: command, cwd: cwd, exitCode: exitCode))
+            let status = try? container.decode(CommandExecutionItemStatus.self, forKey: .status)
+            let aggregatedOutput = try? container.decodeIfPresent(String.self, forKey: .aggregatedOutput)
+            self = .commandExecution(CommandExecutionItem(
+                id: id,
+                command: command,
+                cwd: cwd,
+                exitCode: exitCode,
+                aggregatedOutput: aggregatedOutput,
+                status: status
+            ))
         case "fileChange":
             let id = try container.decode(String.self, forKey: .id)
             let changes = (try? container.decode([FileUpdateChange].self, forKey: .changes)) ?? []
@@ -472,11 +601,52 @@ struct AgentMessageItem: Decodable {
     let text: String
 }
 
+struct UserMessageItem: Decodable {
+    let id: String
+    let content: [UserInputPayload]
+}
+
+struct PlanItem: Decodable {
+    let id: String
+    let text: String
+}
+
+struct ReasoningItem: Decodable {
+    let id: String
+    let summary: [String]
+    let content: [String]
+}
+
 struct CommandExecutionItem: Decodable {
     let id: String
     let command: String
     let cwd: String
     let exitCode: Int?
+    let aggregatedOutput: String?
+    let status: CommandExecutionItemStatus?
+
+    init(
+        id: String,
+        command: String,
+        cwd: String,
+        exitCode: Int?,
+        aggregatedOutput: String?,
+        status: CommandExecutionItemStatus?
+    ) {
+        self.id = id
+        self.command = command
+        self.cwd = cwd
+        self.exitCode = exitCode
+        self.aggregatedOutput = aggregatedOutput
+        self.status = status
+    }
+}
+
+enum CommandExecutionItemStatus: String, Decodable {
+    case inProgress = "inProgress"
+    case completed
+    case failed
+    case declined
 }
 
 struct FileChangeItem: Decodable, Hashable, Sendable {
