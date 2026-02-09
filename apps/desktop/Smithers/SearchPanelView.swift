@@ -3,6 +3,12 @@ import SwiftUI
 struct SearchPanelView: View {
     @ObservedObject var workspace: WorkspaceState
     @FocusState private var searchFocused: Bool
+    @State private var selection: SearchMatchSelection?
+
+    private struct SearchMatchSelection: Hashable {
+        let resultID: UUID
+        let matchID: UUID
+    }
 
     var body: some View {
         let theme = workspace.theme
@@ -84,34 +90,126 @@ struct SearchPanelView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List {
-                ForEach(workspace.searchResults) { result in
-                    Section(result.displayPath) {
-                        ForEach(result.matches) { match in
-                            Button {
-                                workspace.openSearchResult(result, match: match)
-                            } label: {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text("\(match.lineNumber)")
-                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 36, alignment: .trailing)
-                                    Text(match.lineText.trimmingCharacters(in: .whitespaces))
-                                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                        .truncationMode(.tail)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 0) {
+                List(selection: $selection) {
+                    ForEach(workspace.searchResults) { result in
+                        Section(result.displayPath) {
+                            ForEach(result.matches) { match in
+                                SearchMatchRow(match: match)
+                                    .tag(SearchMatchSelection(resultID: result.id, matchID: match.id))
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        workspace.openSearchResult(result, match: match)
+                                    }
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .accessibilityIdentifier("SearchInFilesResults")
+                Divider()
+                    .background(theme.dividerColor)
+                SearchPreviewView(preview: workspace.searchPreview, theme: theme)
+                    .frame(minHeight: 120, idealHeight: 160, maxHeight: 240)
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .accessibilityIdentifier("SearchInFilesResults")
+            .onChange(of: selection) { _, newValue in
+                guard let newValue else {
+                    workspace.clearSearchPreview()
+                    return
+                }
+                guard let result = workspace.searchResults.first(where: { $0.id == newValue.resultID }),
+                      let match = result.matches.first(where: { $0.id == newValue.matchID }) else {
+                    workspace.clearSearchPreview()
+                    return
+                }
+                workspace.updateSearchPreview(result: result, match: match)
+            }
+            .onChange(of: workspace.searchResults) { _, _ in
+                selection = nil
+                workspace.clearSearchPreview()
+            }
         }
+    }
+}
+
+private struct SearchMatchRow: View {
+    let match: SearchMatch
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(match.lineNumber)")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 36, alignment: .trailing)
+            Text(match.lineText.trimmingCharacters(in: .whitespaces))
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+}
+
+private struct SearchPreviewView: View {
+    let preview: SearchPreview?
+    let theme: AppTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Preview")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.mutedForegroundColor)
+                Spacer()
+                if let preview {
+                    Text(preview.displayPath)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.mutedForegroundColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Divider()
+                .background(theme.dividerColor)
+            if let preview {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(preview.lines) { line in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("\(line.number)")
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(theme.mutedForegroundColor)
+                                    .frame(width: 36, alignment: .trailing)
+                                Text(line.text)
+                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(theme.foregroundColor)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                            .padding(.vertical, 2)
+                            .background(line.isMatch ? theme.lineHighlightColor.opacity(0.6) : Color.clear)
+                            .cornerRadius(4)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if preview.isTruncated {
+                    Text("Preview truncated for large files")
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.mutedForegroundColor)
+                }
+            } else {
+                Text("Select a match to preview")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.mutedForegroundColor)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(theme.secondaryBackgroundColor)
     }
 }
