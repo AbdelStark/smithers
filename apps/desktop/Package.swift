@@ -27,10 +27,15 @@ let package = Package(
             name: "GhosttyKit",
             path: "../../ghostty/macos/GhosttyKit.xcframework"
         ),
+        .target(
+            name: "SmithersShared",
+            path: "SmithersShared"
+        ),
         .executableTarget(
             name: "Smithers",
             dependencies: [
                 "GhosttyKit",
+                "SmithersShared",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "STTextView", package: "STTextView"),
                 .product(name: "SwiftTreeSitter", package: "swift-tree-sitter"),
