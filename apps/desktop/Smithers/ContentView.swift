@@ -23,13 +23,14 @@ struct CodeEditor: NSViewRepresentable {
     var fileURL: URL?
     var theme: AppTheme
     var font: NSFont
+    var scrollbarMode: ScrollbarVisibilityMode
     var minFontSize: Double
     var maxFontSize: Double
     var saveViewState: (URL, CGPoint, NSRange) -> Void
     var loadViewState: (URL) -> EditorViewState?
     var onCursorMove: (Int, Int) -> Void
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> ScrollbarHostingView {
         let scrollView = STTextView.scrollableTextView()
         let textView = scrollView.documentView as! STTextView
 
@@ -44,6 +45,7 @@ struct CodeEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         let rulerView = STLineNumberRulerView(textView: textView)
         rulerView.font = Self.lineNumberFont(for: font)
+        rulerView.invalidateHashMarks()
         rulerView.backgroundColor = theme.lineNumberBackground
         rulerView.textColor = theme.lineNumberForeground
         rulerView.highlightSelectedLine = true
@@ -64,13 +66,27 @@ struct CodeEditor: NSViewRepresentable {
         context.coordinator.appliedTheme = theme
         context.coordinator.appliedFont = font
 
-        return scrollView
+        let scrollbarView = ScrollbarOverlayView()
+        scrollbarView.showMode = scrollbarMode
+        scrollbarView.theme = theme
+
+        context.coordinator.attach(scrollView: scrollView, textView: textView, scrollbar: scrollbarView)
+        context.coordinator.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
+        context.coordinator.appliedTheme = theme
+        context.coordinator.appliedFont = font
+
+        return ScrollbarHostingView(contentView: scrollView, scrollbarView: scrollbarView)
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? STTextView else { return }
+    func updateNSView(_ containerView: ScrollbarHostingView, context: Context) {
+        guard let scrollView = containerView.contentView as? NSScrollView,
+              let textView = scrollView.documentView as? STTextView else { return }
         let coord = context.coordinator
         coord.parent = self
+        let scrollbarView = containerView.scrollbarView
+        scrollbarView.showMode = scrollbarMode
+        scrollbarView.theme = theme
+        coord.attach(scrollView: scrollView, textView: textView, scrollbar: scrollbarView)
 
         if coord.appliedTheme != theme {
             let previousTheme = coord.appliedTheme
@@ -88,10 +104,13 @@ struct CodeEditor: NSViewRepresentable {
         }
 
         if let appliedFont = coord.appliedFont, appliedFont != font {
+            coord.saveViewState(for: coord.currentFileURL, textView: textView, scrollView: scrollView)
             coord.appliedFont = font
             coord.resetHighlighterCache()
             coord.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
+            coord.restoreViewState(for: fileURL, textView: textView, scrollView: scrollView)
             updateLineNumberFont(font, scrollView: scrollView)
+            coord.updateScrollMetrics(textView: textView, scrollView: scrollView)
             return
         }
 
@@ -344,6 +363,66 @@ struct CodeEditor: NSViewRepresentable {
             )
         }
 
+        @objc private func handleMagnification(_ recognizer: NSMagnificationGestureRecognizer) {
+            guard textView != nil else { return }
+            switch recognizer.state {
+            case .began:
+                isPinching = true
+                pinchStartFontSize = parent.fontSize
+                pinchStartFont = parent.font
+                liveFontSize = pinchStartFontSize
+            case .changed:
+                guard isPinching else { return }
+                let targetSize = clampedFontSize(pinchStartFontSize * (1 + Double(recognizer.magnification)))
+                if let liveFontSize, abs(targetSize - liveFontSize) < 0.1 {
+                    return
+                }
+                liveFontSize = targetSize
+                applyPreviewFontSize(targetSize)
+            case .ended:
+                guard isPinching else { return }
+                let targetSize = clampedFontSize(pinchStartFontSize * (1 + Double(recognizer.magnification)))
+                applyPreviewFontSize(targetSize)
+                liveFontSize = nil
+                pinchStartFont = nil
+                isPinching = false
+                if abs(parent.fontSize - targetSize) > 0.001 {
+                    parent.fontSize = targetSize
+                } else if let textView {
+                    scheduleHighlight(textView: textView, text: textView.attributedString().string, delay: 0)
+                }
+            case .cancelled, .failed:
+                guard isPinching else { return }
+                applyPreviewFontSize(pinchStartFontSize)
+                liveFontSize = nil
+                pinchStartFont = nil
+                isPinching = false
+                if let textView {
+                    scheduleHighlight(textView: textView, text: textView.attributedString().string, delay: 0)
+                }
+            default:
+                break
+            }
+        }
+
+        private func applyPreviewFontSize(_ size: Double) {
+            guard let textView else { return }
+            let baseFont = pinchStartFont ?? parent.font
+            let previewFont = baseFont.withSize(CGFloat(size))
+            textView.font = previewFont
+            if let lineNumberView {
+                lineNumberView.font = CodeEditor.lineNumberFont(for: previewFont)
+                lineNumberView.invalidateHashMarks()
+            }
+            if let scrollView {
+                updateScrollMetrics(textView: textView, scrollView: scrollView)
+            }
+        }
+
+        private func clampedFontSize(_ size: Double) -> Double {
+            min(max(size, parent.minFontSize), parent.maxFontSize)
+        }
+
         func setTextViewContent(_ textView: STTextView, text: String) {
             let attrs: [NSAttributedString.Key: Any] = [
                 .foregroundColor: parent.theme.foreground,
@@ -566,9 +645,11 @@ struct ContentView: View {
     }
 
     @ObservedObject var workspace: WorkspaceState
+    @ObservedObject var tmuxKeyHandler: TmuxKeyHandler
     @State private var focusedPane: FocusedPane? = .editor
     @State private var editorViewStates: [URL: EditorViewState] = [:]
     @State private var editorScrollMetrics = EditorScrollMetrics()
+    private let shortcutsPanelWidth: CGFloat = 220
 
     var body: some View {
         let selectionKey = workspace.selectedFileURL?.absoluteString ?? "empty"
@@ -595,7 +676,8 @@ struct ContentView: View {
                         focusedPane = .sidebar
                     }
             } detail: {
-                VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    VStack(spacing: 0) {
                     if !workspace.openFiles.isEmpty {
                         TabBar(workspace: workspace)
                         Divider()
@@ -659,6 +741,14 @@ struct ContentView: View {
 
                     StatusBar(workspace: workspace, height: statusBarHeight)
                 }
+
+                if workspace.isShortcutsPanelVisible {
+                    Divider()
+                        .background(workspace.theme.dividerColor)
+                    KeyboardShortcutsPanel(workspace: workspace, tmuxKeyHandler: tmuxKeyHandler)
+                        .frame(width: shortcutsPanelWidth)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
             .navigationTitle("")
 
@@ -715,6 +805,7 @@ struct ContentView: View {
         }
         .animation(.spring(duration: 0.25, bounce: 0.15), value: workspace.isCommandPalettePresented)
         .animation(.easeInOut(duration: 0.2), value: workspace.isProgressBarVisible)
+        .animation(.easeInOut(duration: 0.2), value: workspace.isShortcutsPanelVisible)
         .background(workspace.theme.backgroundColor)
     }
 
@@ -735,10 +826,13 @@ struct ContentView: View {
                     text: $workspace.editorText,
                     selectionRequest: $workspace.pendingSelection,
                     scrollMetrics: $editorScrollMetrics,
+                    fontSize: $workspace.editorFontSize,
                     language: workspace.currentLanguage,
                     fileURL: workspace.selectedFileURL,
                     theme: workspace.theme,
                     font: workspace.editorFont,
+                    minFontSize: WorkspaceState.minEditorFontSize,
+                    maxFontSize: WorkspaceState.maxEditorFontSize,
                     saveViewState: { url, scrollOrigin, selection in
                         editorViewStates[url] = EditorViewState(
                             scrollOrigin: scrollOrigin,
@@ -775,7 +869,7 @@ struct ContentView: View {
                 .font(.system(size: Typography.iconL))
                 .foregroundStyle(.tertiary)
             Text("Select a file to edit")
-                .font(.title3)
+                .font(.system(size: Typography.l, weight: .semibold))
                 .foregroundStyle(.secondary)
             VStack(spacing: 6) {
                 emptyStateShortcut("Open Folder", "⌘⇧O")
@@ -794,7 +888,7 @@ struct ContentView: View {
             ProgressView()
                 .controlSize(.small)
             Text("Starting Neovim...")
-                .font(.title3)
+                .font(.system(size: Typography.l, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -811,6 +905,168 @@ struct ContentView: View {
                 .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: 260)
+    }
+}
+
+private struct FocusRing: View {
+    let isActive: Bool
+    let theme: AppTheme
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .strokeBorder(isActive ? theme.accentColor.opacity(0.35) : Color.clear, lineWidth: 2)
+    }
+}
+
+private struct SidebarResizeHandle: View {
+    let theme: AppTheme
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { _ in
+                Circle()
+                    .frame(width: 3, height: 3)
+            }
+        }
+        .foregroundStyle(theme.mutedForegroundColor.opacity(0.5))
+        .frame(width: 10)
+        .padding(.vertical, 12)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct BreadcrumbBar: View {
+    let path: String
+    let theme: AppTheme
+
+    var body: some View {
+        let parts = path.split(separator: "/").map(String.init)
+        HStack(spacing: 6) {
+            if parts.isEmpty {
+                Text("Workspace")
+                    .font(.system(size: Typography.s, weight: .medium))
+                    .foregroundStyle(theme.mutedForegroundColor)
+            } else {
+                ForEach(parts.indices, id: \.self) { index in
+                    Text(parts[index])
+                        .font(.system(size: Typography.s, weight: index == parts.count - 1 ? .semibold : .regular))
+                        .foregroundStyle(index == parts.count - 1
+                            ? theme.foregroundColor
+                            : theme.mutedForegroundColor)
+                    if index < parts.count - 1 {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: Typography.xs, weight: .semibold))
+                            .foregroundStyle(theme.mutedForegroundColor.opacity(0.8))
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(theme.secondaryBackgroundColor)
+    }
+}
+
+private struct StatusBar: View {
+    @ObservedObject var workspace: WorkspaceState
+    let height: CGFloat
+
+    var body: some View {
+        let theme = workspace.theme
+        let selectedURL = workspace.selectedFileURL
+        let isRegular = selectedURL.map(workspace.isRegularFileURL) ?? false
+        let viewLabel: String = {
+            guard let selectedURL else { return "No file" }
+            if workspace.isChatURL(selectedURL) { return "Chat" }
+            if workspace.isTerminalURL(selectedURL) { return "Terminal" }
+            if workspace.isDiffURL(selectedURL) { return "Diff" }
+            return "Editor"
+        }()
+
+        HStack(spacing: 12) {
+            if isRegular {
+                Text("Ln \(workspace.cursorLine), Col \(workspace.cursorColumn)")
+                    .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
+                Text("UTF-8")
+                Text("LF")
+            } else {
+                Text(viewLabel)
+                    .font(.system(size: Typography.s, weight: .medium))
+            }
+
+            Spacer()
+
+            Text(workspace.currentLanguage?.name ?? "Plain Text")
+            Text("Spaces: 4")
+        }
+        .font(.system(size: Typography.s, weight: .regular))
+        .foregroundStyle(theme.mutedForegroundColor)
+        .padding(.horizontal, 12)
+        .frame(height: height)
+        .background(theme.secondaryBackgroundColor)
+    }
+}
+
+private struct EditorSkeleton: View {
+    let theme: AppTheme
+    @State private var shimmer = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let widths: [CGFloat] = [0.65, 0.9, 0.55, 0.82, 0.7, 0.6, 0.88, 0.5, 0.78, 0.62, 0.86, 0.57]
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(widths.indices, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(theme.foregroundColor.opacity(0.06))
+                        .frame(width: proxy.size.width * widths[index], height: 12)
+                }
+                Spacer()
+            }
+            .padding(16)
+            .opacity(shimmer ? 0.55 : 1)
+            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: shimmer)
+            .onAppear { shimmer = true }
+        }
+        .background(theme.backgroundColor)
+    }
+}
+
+private struct MinimapView: View {
+    let metrics: EditorScrollMetrics
+    let theme: AppTheme
+
+    var body: some View {
+        GeometryReader { proxy in
+            let total = max(metrics.contentHeight, 1)
+            let viewportRatio = min(1, metrics.viewportHeight / total)
+            let scrollable = max(total - metrics.viewportHeight, 1)
+            let scrollRatio = min(1, metrics.scrollY / scrollable)
+            let indicatorHeight = max(24, proxy.size.height * viewportRatio)
+            let indicatorY = (proxy.size.height - indicatorHeight) * scrollRatio
+
+            ZStack(alignment: .top) {
+                Rectangle()
+                    .fill(theme.panelBackgroundColor)
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(theme.accentColor.opacity(0.18))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .stroke(theme.accentColor.opacity(0.35), lineWidth: 1)
+                    )
+                    .frame(height: indicatorHeight)
+                    .offset(y: indicatorY)
+                    .padding(.horizontal, 6)
+            }
+        }
+        .background(theme.panelBackgroundColor)
+        .overlay(
+            Rectangle()
+                .fill(theme.panelBorderColor.opacity(0.4))
+                .frame(width: 1),
+            alignment: .leading
+        )
+        .allowsHitTesting(false)
     }
 }
 
