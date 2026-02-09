@@ -9,6 +9,7 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let workspace else { return true }
         if workspace.shouldBypassCloseGuards() {
+            workspace.persistSessionState()
             return true
         }
         if bypassNextClose {
