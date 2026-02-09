@@ -5,7 +5,7 @@ struct FileTreeSidebar: View {
 
     var body: some View {
         let theme = workspace.theme
-        let topInset: CGFloat = 28
+        let topInset: CGFloat = 38
         Group {
             if workspace.fileTree.isEmpty {
                 VStack(spacing: 16) {
