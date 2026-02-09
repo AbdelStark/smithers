@@ -163,6 +163,38 @@ final class CodexService: ObservableObject {
         return response.thread.id
     }
 
+    func forkThread(threadId: String, cwd: String) async throws -> ThreadSnapshot {
+        guard let transport, isRunning else { throw ServiceError.notRunning }
+
+        let params = ThreadForkParams(
+            threadId: threadId,
+            cwd: cwd,
+            approvalPolicy: .never,
+            sandbox: .workspaceWrite
+        )
+        let response: ThreadForkResponse = try await transport.sendRequest(
+            method: "thread/fork",
+            params: params,
+            responseType: ThreadForkResponse.self
+        )
+        self.threadId = response.thread.id
+        activeTurnId = nil
+        return response.thread
+    }
+
+    func rollbackThread(threadId: String, numTurns: Int) async throws -> ThreadSnapshot {
+        guard let transport, isRunning else { throw ServiceError.notRunning }
+
+        let params = ThreadRollbackParams(threadId: threadId, numTurns: numTurns)
+        let response: ThreadRollbackResponse = try await transport.sendRequest(
+            method: "thread/rollback",
+            params: params,
+            responseType: ThreadRollbackResponse.self
+        )
+        activeTurnId = nil
+        return response.thread
+    }
+
     private func handleIncoming(_ incoming: JSONRPCTransport.Incoming) async {
         switch incoming {
         case .notification(let method, let params):
