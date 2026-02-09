@@ -24,6 +24,7 @@ struct CodeEditor: NSViewRepresentable {
     var fileURL: URL?
     var theme: AppTheme
     var font: NSFont
+    var cursorStyle: EditorCursorShape = .bar
     var scrollbarMode: ScrollbarVisibilityMode
     var minFontSize: Double
     var maxFontSize: Double
@@ -37,7 +38,7 @@ struct CodeEditor: NSViewRepresentable {
 
         textView.font = font
         textView.backgroundColor = theme.background
-        textView.insertionPointColor = theme.foreground
+        textView.insertionPointColor = .clear
         textView.insertionPointWidth = Self.cursorWidth(for: font)
         textView.highlightSelectedLine = true
         textView.selectedLineHighlightColor = theme.lineHighlight
@@ -197,7 +198,7 @@ struct CodeEditor: NSViewRepresentable {
 
     private func applyTheme(_ theme: AppTheme, previousTheme: AppTheme?, to textView: STTextView, scrollView: NSScrollView) {
         textView.backgroundColor = theme.background
-        textView.insertionPointColor = theme.foreground
+        textView.insertionPointColor = .clear
         textView.selectedLineHighlightColor = theme.lineHighlight
         textView.textColor = theme.foreground
         var typing = textView.typingAttributes
@@ -311,6 +312,11 @@ struct CodeEditor: NSViewRepresentable {
         private weak var lineNumberView: STLineNumberRulerView?
         private weak var scrollbarView: ScrollbarOverlayView?
         private weak var indentGuidesView: IndentGuidesView?
+        private weak var cursorView: EditorCursorView?
+        private var cursorObservers: [NSObjectProtocol] = []
+        private weak var cursorWindow: NSWindow?
+        private var lastCursorRect: NSRect?
+        private var appliedCursorStyle: EditorCursorShape?
         private var scrollObserver: Any?
         private var magnificationRecognizer: NSMagnificationGestureRecognizer?
         private var highlighterCache: [String: TreeSitterHighlighter] = [:]
@@ -332,6 +338,8 @@ struct CodeEditor: NSViewRepresentable {
             if let scrollObserver {
                 NotificationCenter.default.removeObserver(scrollObserver)
             }
+            cursorObservers.forEach { NotificationCenter.default.removeObserver($0) }
+            cursorObservers.removeAll()
         }
 
         func attach(scrollView: NSScrollView, textView: STTextView, scrollbar: ScrollbarOverlayView) {
@@ -367,6 +375,7 @@ struct CodeEditor: NSViewRepresentable {
             configureScrollbarActions(scrollView: scrollView, scrollbar: scrollbar)
             if let textView = self.textView, let scrollView = self.scrollView {
                 updateScrollMetrics(textView: textView, scrollView: scrollView)
+                ensureCursorView(textView: textView)
             }
         }
 
