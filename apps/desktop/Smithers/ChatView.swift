@@ -381,6 +381,8 @@ struct ChatView: View {
 struct ChatBubble: View {
     let message: ChatMessage
     @ObservedObject var workspace: WorkspaceState
+    @State private var isHovered = false
+    @State private var showActions = false
 
     var body: some View {
         HStack {
@@ -390,6 +392,16 @@ struct ChatBubble: View {
             } else {
                 Spacer(minLength: 24)
                 bubble
+            }
+        }
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    if isHovered { showActions = true }
+                }
+            } else {
+                showActions = false
             }
         }
     }
@@ -402,6 +414,14 @@ struct ChatBubble: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(bubbleColor)
             )
+            .overlay(alignment: .topTrailing) {
+                if showActions && !message.isStreaming {
+                    MessageActionBar(message: message, workspace: workspace)
+                        .transition(.opacity)
+                        .padding(.top, -4)
+                        .padding(.trailing, -4)
+                }
+            }
     }
 
     private var bubbleColor: Color {
@@ -488,6 +508,79 @@ struct ChatBubble: View {
         case .starterPrompt(let title, let suggestions):
             StarterPromptView(title: title, suggestions: suggestions, workspace: workspace)
         }
+    }
+}
+
+struct MessageActionBar: View {
+    let message: ChatMessage
+    @ObservedObject var workspace: WorkspaceState
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if workspace.canForkMessage(message) {
+                Button {
+                    workspace.forkChat(from: message)
+                } label: {
+                    Image(systemName: "arrow.branch")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Fork from here")
+            }
+
+            if workspace.canCopyMessage(message) {
+                Button {
+                    workspace.copyChatMessage(message)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Copy message")
+            }
+
+            if workspace.canRetryMessage(message) {
+                Button {
+                    workspace.retryFromMessage(message)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Retry")
+            }
+
+            if workspace.canEditMessage(message) {
+                Button {
+                    workspace.editAndResendMessage(message)
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Edit & resend")
+            }
+
+            Menu {
+                if workspace.canRollbackToMessage(message) {
+                    Button("Rollback to here") {
+                        workspace.rollbackChat(to: message)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 18, height: 18)
+            .help("More")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.black.opacity(0.2))
+        )
     }
 }
 
