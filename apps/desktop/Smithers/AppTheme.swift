@@ -43,32 +43,38 @@ struct AppTheme: Equatable {
         isLight ? .light : .dark
     }
 
+    // 3-surface depth system:
+    //   Base (background)      → app background
+    //   Surface 1 (secondary)  → primary panes (sidebar, editor)
+    //   Surface 2 (panel/tab)  → chrome (tab bar, status bar, sidebar header)
+    //   Borders                → subtle 1px separators at low alpha
+
     static let `default` = AppTheme(
-        background: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1),
-        foreground: .white,
-        mutedForeground: NSColor.white.withAlphaComponent(0.7),
-        secondaryBackground: NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1),
-        panelBackground: NSColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1),
-        panelBorder: NSColor.white.withAlphaComponent(0.15),
-        divider: NSColor.white.withAlphaComponent(0.12),
-        tabBarBackground: NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1),
-        tabSelectedBackground: NSColor.white.withAlphaComponent(0.10),
-        tabSelectedForeground: .white,
-        tabForeground: NSColor.white.withAlphaComponent(0.60),
-        tabBorder: NSColor.white.withAlphaComponent(0.12),
-        selectionBackground: NSColor.white.withAlphaComponent(0.12),
-        matchingBracket: NSColor.white.withAlphaComponent(0.18),
-        accent: .systemBlue,
-        lineNumberForeground: NSColor(white: 0.55, alpha: 1),
-        lineNumberSelectedForeground: NSColor(white: 0.55, alpha: 1),
-        lineNumberBackground: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1),
-        lineHighlight: NSColor(white: 0.20, alpha: 1),
-        chatAssistantBubble: NSColor.white.withAlphaComponent(0.08),
-        chatUserBubble: NSColor.systemBlue.withAlphaComponent(0.45),
-        chatCommandBubble: NSColor.black.withAlphaComponent(0.35),
-        chatStatusBubble: NSColor.white.withAlphaComponent(0.12),
-        chatDiffBubble: NSColor.white.withAlphaComponent(0.07),
-        inputFieldBackground: NSColor.white.withAlphaComponent(0.10)
+        background: NSColor(red: 0.059, green: 0.067, blue: 0.102, alpha: 1),    // #0f111a — base
+        foreground: NSColor.white.withAlphaComponent(0.88),                        // primary text
+        mutedForeground: NSColor.white.withAlphaComponent(0.60),                   // secondary text
+        secondaryBackground: NSColor(red: 0.078, green: 0.094, blue: 0.149, alpha: 1), // #141826 — surface 2
+        panelBackground: NSColor(red: 0.102, green: 0.125, blue: 0.188, alpha: 1),     // #1a2030 — surface 3
+        panelBorder: NSColor.white.withAlphaComponent(0.08),                       // subtle border
+        divider: NSColor.white.withAlphaComponent(0.08),                           // subtle divider
+        tabBarBackground: NSColor(red: 0.078, green: 0.094, blue: 0.149, alpha: 1),    // surface 2
+        tabSelectedBackground: NSColor.white.withAlphaComponent(0.08),
+        tabSelectedForeground: NSColor.white.withAlphaComponent(0.88),
+        tabForeground: NSColor.white.withAlphaComponent(0.55),
+        tabBorder: NSColor.white.withAlphaComponent(0.06),
+        selectionBackground: NSColor.white.withAlphaComponent(0.10),
+        matchingBracket: NSColor.white.withAlphaComponent(0.16),
+        accent: NSColor(red: 0.298, green: 0.553, blue: 1.0, alpha: 1),           // #4c8dff
+        lineNumberForeground: NSColor.white.withAlphaComponent(0.30),
+        lineNumberSelectedForeground: NSColor.white.withAlphaComponent(0.60),
+        lineNumberBackground: NSColor(red: 0.059, green: 0.067, blue: 0.102, alpha: 1),
+        lineHighlight: NSColor.white.withAlphaComponent(0.06),
+        chatAssistantBubble: NSColor.white.withAlphaComponent(0.05),
+        chatUserBubble: NSColor.white.withAlphaComponent(0.08),
+        chatCommandBubble: NSColor.white.withAlphaComponent(0.04),
+        chatStatusBubble: NSColor.white.withAlphaComponent(0.04),
+        chatDiffBubble: NSColor.white.withAlphaComponent(0.05),
+        inputFieldBackground: NSColor.white.withAlphaComponent(0.06)
     )
 
     static func fromNvimHighlights(_ highlights: [String: NvimHighlightColors]) -> AppTheme {
@@ -130,11 +136,11 @@ struct AppTheme: Equatable {
         let lineHighlight = highlights["CursorLine"]?.bg
             ?? selectionBackground.withAlphaComponent(isLight ? 0.14 : 0.20)
 
-        let assistantBubble = foreground.withAlphaComponent(isLight ? 0.08 : 0.12)
-        let userBubble = accent.withAlphaComponent(isLight ? 0.20 : 0.35)
-        let commandBubble = foreground.withAlphaComponent(isLight ? 0.10 : 0.18)
-        let statusBubble = foreground.withAlphaComponent(isLight ? 0.06 : 0.10)
-        let diffBubble = foreground.withAlphaComponent(isLight ? 0.08 : 0.12)
+        let assistantBubble = foreground.withAlphaComponent(isLight ? 0.05 : 0.05)
+        let userBubble = foreground.withAlphaComponent(isLight ? 0.08 : 0.08)
+        let commandBubble = foreground.withAlphaComponent(isLight ? 0.04 : 0.04)
+        let statusBubble = foreground.withAlphaComponent(isLight ? 0.03 : 0.04)
+        let diffBubble = foreground.withAlphaComponent(isLight ? 0.05 : 0.05)
         let inputFieldBackground = background.blended(with: foreground, fraction: isLight ? 0.06 : 0.12)
 
         return AppTheme(
