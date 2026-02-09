@@ -44,6 +44,8 @@ final class CodexService: ObservableObject {
     private var incomingTask: Task<Void, Never>?
     private var threadId: String?
     private var activeTurnId: String?
+    private var smithersCtlInterpreter: SmithersCtlInterpreter?
+    private var handledSmithersCommandItemIds: Set<String> = []
 
     init() {
         var continuation: AsyncStream<CodexEvent>.Continuation?
@@ -52,6 +54,10 @@ final class CodexService: ObservableObject {
             continuation = streamContinuation
         }
         eventContinuation = continuation!
+    }
+
+    func attachWorkspace(_ workspace: WorkspaceState) {
+        smithersCtlInterpreter = SmithersCtlInterpreter(workspace: workspace)
     }
 
     func start(cwd: String, resumeThreadId: String? = nil) async throws -> ThreadStartResult {
@@ -105,6 +111,8 @@ final class CodexService: ObservableObject {
         transport = nil
         threadId = nil
         activeTurnId = nil
+        smithersCtlInterpreter = nil
+        handledSmithersCommandItemIds.removeAll()
         isRunning = false
     }
 
@@ -227,6 +235,9 @@ final class CodexService: ObservableObject {
             }
         case "item/commandExecution/outputDelta":
             if let params, let decoded = try? params.decode(CommandExecutionOutputDeltaParams.self) {
+                if handledSmithersCommandItemIds.contains(decoded.itemId) {
+                    return
+                }
                 eventContinuation.yield(.commandOutput(turnId: decoded.turnId, itemId: decoded.itemId, text: decoded.delta))
             }
         case "item/fileChange/outputDelta":
@@ -253,6 +264,9 @@ final class CodexService: ObservableObject {
                 case .agentMessage(let item):
                     eventContinuation.yield(.agentMessageCompleted(turnId: decoded.turnId, text: item.text))
                 case .commandExecution(let item):
+                    if handledSmithersCommandItemIds.remove(item.id) != nil {
+                        break
+                    }
                     eventContinuation.yield(.commandCompleted(
                         turnId: decoded.turnId,
                         itemId: item.id,
@@ -286,6 +300,23 @@ final class CodexService: ObservableObject {
     private func handleRequest(id: RPCID, method: String, params: JSONValue?) {
         switch method {
         case "item/commandExecution/requestApproval":
+            if let params,
+               let decoded = try? params.decode(CommandExecutionRequestApprovalParams.self),
+               isSmithersCtlCommand(decoded.command),
+               let interpreter = smithersCtlInterpreter {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let result = await interpreter.dispatch(commandLine: decoded.command, cwd: decoded.cwd)
+                    handledSmithersCommandItemIds.insert(decoded.itemId)
+                    if !result.output.isEmpty {
+                        eventContinuation.yield(.commandOutput(turnId: decoded.turnId, itemId: decoded.itemId, text: result.output))
+                    }
+                    eventContinuation.yield(.commandCompleted(turnId: decoded.turnId, itemId: decoded.itemId, exitCode: result.exitCode))
+                    let response = CommandExecutionRequestApprovalResponse(decision: "decline")
+                    try? transport?.sendResponse(id: id, result: response)
+                }
+                return
+            }
             let response = CommandExecutionRequestApprovalResponse(decision: "approve")
             try? transport?.sendResponse(id: id, result: response)
         case "item/fileChange/requestApproval":
@@ -294,6 +325,14 @@ final class CodexService: ObservableObject {
         default:
             try? transport?.sendError(id: id, code: -32601, message: "Method not implemented")
         }
+    }
+
+    private func isSmithersCtlCommand(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == "smithers-ctl"
+            || trimmed.hasPrefix("smithers-ctl ")
+            || trimmed == "smithers"
+            || trimmed.hasPrefix("smithers ")
     }
 
     private func initializeSession() async throws {
@@ -539,6 +578,14 @@ struct TurnDiffUpdatedParams: Decodable {
     let threadId: String
     let turnId: String
     let diff: String
+}
+
+struct CommandExecutionRequestApprovalParams: Decodable {
+    let threadId: String
+    let turnId: String
+    let itemId: String
+    let command: String
+    let cwd: String
 }
 
 struct CommandExecutionRequestApprovalResponse: Encodable {
