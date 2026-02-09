@@ -1,16 +1,16 @@
 import Foundation
 
 enum CodexEvent: Sendable {
-    case turnStarted
-    case agentMessageDelta(text: String)
-    case agentMessageCompleted(text: String)
-    case commandStarted(itemId: String, command: String, cwd: String)
-    case commandOutput(itemId: String, text: String)
-    case commandCompleted(itemId: String, exitCode: Int?)
+    case turnStarted(turnId: String)
+    case agentMessageDelta(turnId: String, text: String)
+    case agentMessageCompleted(turnId: String, text: String)
+    case commandStarted(turnId: String, itemId: String, command: String, cwd: String)
+    case commandOutput(turnId: String, itemId: String, text: String)
+    case commandCompleted(turnId: String, itemId: String, exitCode: Int?)
     case fileChange(turnId: String, item: FileChangeItem)
     case fileChangeDelta(turnId: String, itemId: String, delta: String)
     case turnDiffUpdated(turnId: String, diff: String)
-    case turnCompleted(status: String)
+    case turnCompleted(turnId: String, status: String)
     case error(message: String)
 }
 
@@ -119,7 +119,7 @@ final class CodexService: ObservableObject {
             responseType: TurnStartResponse.self
         )
         activeTurnId = response.turn.id
-        eventContinuation.yield(.turnStarted)
+        eventContinuation.yield(.turnStarted(turnId: response.turn.id))
     }
 
     func interrupt() async throws {
@@ -181,11 +181,11 @@ final class CodexService: ObservableObject {
         switch method {
         case "item/agentMessage/delta":
             if let params, let decoded = try? params.decode(AgentMessageDeltaParams.self) {
-                eventContinuation.yield(.agentMessageDelta(text: decoded.delta))
+                eventContinuation.yield(.agentMessageDelta(turnId: decoded.turnId, text: decoded.delta))
             }
         case "item/commandExecution/outputDelta":
             if let params, let decoded = try? params.decode(CommandExecutionOutputDeltaParams.self) {
-                eventContinuation.yield(.commandOutput(itemId: decoded.itemId, text: decoded.delta))
+                eventContinuation.yield(.commandOutput(turnId: decoded.turnId, itemId: decoded.itemId, text: decoded.delta))
             }
         case "item/fileChange/outputDelta":
             if let params, let decoded = try? params.decode(FileChangeOutputDeltaParams.self) {
@@ -195,7 +195,12 @@ final class CodexService: ObservableObject {
             if let params, let decoded = try? params.decode(ItemNotificationParams.self) {
                 switch decoded.item {
                 case .commandExecution(let item):
-                    eventContinuation.yield(.commandStarted(itemId: item.id, command: item.command, cwd: item.cwd))
+                    eventContinuation.yield(.commandStarted(
+                        turnId: decoded.turnId,
+                        itemId: item.id,
+                        command: item.command,
+                        cwd: item.cwd
+                    ))
                 default:
                     break
                 }
@@ -204,9 +209,13 @@ final class CodexService: ObservableObject {
             if let params, let decoded = try? params.decode(ItemNotificationParams.self) {
                 switch decoded.item {
                 case .agentMessage(let item):
-                    eventContinuation.yield(.agentMessageCompleted(text: item.text))
+                    eventContinuation.yield(.agentMessageCompleted(turnId: decoded.turnId, text: item.text))
                 case .commandExecution(let item):
-                    eventContinuation.yield(.commandCompleted(itemId: item.id, exitCode: item.exitCode))
+                    eventContinuation.yield(.commandCompleted(
+                        turnId: decoded.turnId,
+                        itemId: item.id,
+                        exitCode: item.exitCode
+                    ))
                 case .fileChange(let item):
                     eventContinuation.yield(.fileChange(turnId: decoded.turnId, item: item))
                 default:
@@ -219,7 +228,7 @@ final class CodexService: ObservableObject {
             }
         case "turn/completed":
             if let params, let decoded = try? params.decode(TurnCompletedParams.self) {
-                eventContinuation.yield(.turnCompleted(status: decoded.turn.status))
+                eventContinuation.yield(.turnCompleted(turnId: decoded.turn.id, status: decoded.turn.status))
                 activeTurnId = nil
             }
         case "error":
@@ -390,6 +399,26 @@ struct ThreadResumeResponse: Decodable {
     let thread: ThreadSnapshot
 }
 
+struct ThreadForkParams: Encodable {
+    let threadId: String
+    let cwd: String?
+    let approvalPolicy: ApprovalPolicy?
+    let sandbox: SandboxMode?
+}
+
+struct ThreadForkResponse: Decodable {
+    let thread: ThreadSnapshot
+}
+
+struct ThreadRollbackParams: Encodable {
+    let threadId: String
+    let numTurns: Int
+}
+
+struct ThreadRollbackResponse: Decodable {
+    let thread: ThreadSnapshot
+}
+
 struct ThreadInfo: Decodable {
     let id: String
 }
@@ -431,11 +460,16 @@ struct TurnCompletedParams: Decodable {
 
 struct AgentMessageDeltaParams: Decodable {
     let delta: String
+    let itemId: String
+    let threadId: String
+    let turnId: String
 }
 
 struct CommandExecutionOutputDeltaParams: Decodable {
     let itemId: String
     let delta: String
+    let threadId: String
+    let turnId: String
 }
 
 struct FileChangeOutputDeltaParams: Decodable {
