@@ -9,6 +9,7 @@ final class GhosttyTerminalView: NSView, ObservableObject, NSTextInputClient {
     @Published var isHealthy: Bool = true
 
     var onClose: (() -> Void)?
+    var onScrollActivity: (() -> Void)?
     private(set) var command: String?
     var optionAsMeta: OptionAsMeta = .both
 
@@ -235,6 +236,7 @@ final class GhosttyTerminalView: NSView, ObservableObject, NSTextInputClient {
         let mods: UInt8 = precision ? 0b0000_0001 : 0
         let scrollMods: ghostty_input_scroll_mods_t = ghostty_input_scroll_mods_t(Int32(mods))
         ghostty_surface_mouse_scroll(surface, x, y, scrollMods)
+        onScrollActivity?()
     }
 
     override func keyDown(with event: NSEvent) {
