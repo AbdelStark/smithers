@@ -154,6 +154,7 @@ final class MultiCursorTextView: STTextView {
     }
 
     private func handleMultiCursorKeyDown(_ event: NSEvent) -> Bool {
+        guard isSelectable else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == [] && event.charactersIgnoringModifiers == "\u{1b}" {
             if collapseToSingleCursor() {
@@ -177,6 +178,7 @@ final class MultiCursorTextView: STTextView {
     }
 
     private func handleMultiCursorKeyEquivalent(_ event: NSEvent) -> Bool {
+        guard isSelectable else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard let characters = event.charactersIgnoringModifiers?.lowercased() else { return false }
 
