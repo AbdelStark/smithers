@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Main JJ Panel
