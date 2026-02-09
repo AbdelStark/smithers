@@ -8,12 +8,13 @@ struct CodeEditor: NSViewRepresentable {
     var language: SupportedLanguage?
     var fileURL: URL?
     var theme: AppTheme
+    var font: NSFont
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = STTextView.scrollableTextView()
         let textView = scrollView.documentView as! STTextView
 
-        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.font = font
         textView.backgroundColor = theme.background
         textView.insertionPointColor = theme.foreground
         textView.highlightSelectedLine = true
@@ -38,6 +39,7 @@ struct CodeEditor: NSViewRepresentable {
 
         context.coordinator.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
         context.coordinator.appliedTheme = theme
+        context.coordinator.appliedFont = font
 
         return scrollView
     }
@@ -54,6 +56,13 @@ struct CodeEditor: NSViewRepresentable {
         }
 
         if coord.currentFileURL != fileURL {
+            coord.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
+            return
+        }
+
+        if let appliedFont = coord.appliedFont, appliedFont != font {
+            coord.appliedFont = font
+            coord.resetHighlighterCache()
             coord.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
             return
         }
@@ -156,6 +165,7 @@ struct CodeEditor: NSViewRepresentable {
         private var highlightWorkItem: DispatchWorkItem?
         fileprivate var lastAppliedText: String = ""
         var appliedTheme: AppTheme?
+        var appliedFont: NSFont?
 
         init(parent: CodeEditor) {
             self.parent = parent
@@ -164,13 +174,14 @@ struct CodeEditor: NSViewRepresentable {
         func loadFile(text: String, language: SupportedLanguage?, fileURL: URL?, textView: STTextView) {
             currentFileURL = fileURL
             ignoreNextChange = true
+            appliedFont = parent.font
             setTextViewContent(textView, text: text)
 
             if let language {
                 if let cached = highlighterCache[language.name] {
                     highlighter = cached
                 } else {
-                    let h = TreeSitterHighlighter(language: language)
+                    let h = TreeSitterHighlighter(language: language, font: parent.font)
                     highlighterCache[language.name] = h
                     highlighter = h
                 }
@@ -183,11 +194,17 @@ struct CodeEditor: NSViewRepresentable {
         func setTextViewContent(_ textView: STTextView, text: String) {
             let attrs: [NSAttributedString.Key: Any] = [
                 .foregroundColor: parent.theme.foreground,
-                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .font: parent.font,
             ]
+            textView.font = parent.font
             textView.setAttributedString(NSAttributedString(string: text, attributes: attrs))
             textView.typingAttributes = attrs
             lastAppliedText = text
+        }
+
+        func resetHighlighterCache() {
+            highlighterCache = [:]
+            highlighter = nil
         }
 
         func textViewDidChangeText(_ notification: Notification) {
@@ -270,7 +287,8 @@ struct ContentView: View {
                                     selectionRequest: $workspace.pendingSelection,
                                     language: workspace.currentLanguage,
                                     fileURL: workspace.selectedFileURL,
-                                    theme: workspace.theme
+                                    theme: workspace.theme,
+                                    font: workspace.editorFont
                                 )
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
@@ -284,7 +302,7 @@ struct ContentView: View {
 
             if workspace.isCommandPalettePresented {
                 CommandPaletteView(workspace: workspace)
-                    .transition(.opacity)
+                    .transition(.scale(scale: 0.97, anchor: .top).combined(with: .opacity))
                     .zIndex(1)
             }
 
@@ -310,7 +328,7 @@ struct ContentView: View {
                     .accessibilityHidden(false)
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: workspace.isCommandPalettePresented)
+        .animation(.spring(duration: 0.25, bounce: 0.15), value: workspace.isCommandPalettePresented)
         .animation(.easeInOut(duration: 0.2), value: workspace.toastMessage)
         .background(workspace.theme.backgroundColor)
     }
@@ -384,6 +402,7 @@ struct TabBar: View {
                                 onSelect: { workspace.selectFile(url) },
                                 onClose: { workspace.requestCloseFile(url) }
                             )
+                            .transition(.scale(scale: 0.8, anchor: .leading).combined(with: .opacity))
                         } else {
                             let diffInfo = isDiff ? workspace.diffTab(for: url) : nil
                             let diffSubtitle = diffInfo?.summary.isEmpty == false ? diffInfo?.summary : "Diff view"
@@ -402,9 +421,11 @@ struct TabBar: View {
                                     workspace.requestCloseFile(url)
                                 }
                             )
+                            .transition(.scale(scale: 0.8, anchor: .leading).combined(with: .opacity))
                         }
                     }
                 }
+                .animation(.easeInOut(duration: 0.15), value: workspace.openFiles)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
             }
@@ -478,13 +499,15 @@ struct TabBarItem: View {
     let theme: AppTheme
     let onSelect: () -> Void
     let onClose: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         let helpText = isModified ? "\(subtitle)\nUnsaved changes" : subtitle
+        let fileColor = colorForFile(title)
         HStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 12))
-                .foregroundStyle(theme.mutedForegroundColor)
+                .foregroundStyle(fileColor?.opacity(0.8) ?? theme.mutedForegroundColor)
             Text(title)
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
@@ -504,20 +527,29 @@ struct TabBarItem: View {
                     .padding(4)
             }
             .buttonStyle(.plain)
+            .opacity(isHovered || isSelected ? 1 : 0)
             .accessibilityLabel("Close \(title)")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isSelected ? theme.tabSelectedBackgroundColor : Color.clear)
+                .fill(isSelected ? theme.tabSelectedBackgroundColor : (isHovered ? theme.tabSelectedBackgroundColor.opacity(0.5) : Color.clear))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .strokeBorder(isSelected ? theme.tabBorderColor : theme.tabBorderColor.opacity(0.6))
         )
+        .overlay(alignment: .bottom) {
+            if isSelected {
+                Rectangle()
+                    .fill(theme.accentColor)
+                    .frame(height: 2)
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .onTapGesture(perform: onSelect)
+        .onHover { isHovered = $0 }
         .help(helpText)
     }
 }
@@ -537,5 +569,21 @@ func iconForFile(_ name: String) -> String {
     case "zip", "tar", "gz": return "doc.zipper"
     case "resolved": return "lock"
     default: return "doc.text"
+    }
+}
+
+func colorForFile(_ name: String) -> Color? {
+    let ext = (name as NSString).pathExtension.lowercased()
+    switch ext {
+    case "swift": return .orange
+    case "py": return Color(red: 0.3, green: 0.6, blue: 0.9)
+    case "js": return .yellow
+    case "ts", "tsx": return Color(red: 0.2, green: 0.5, blue: 0.8)
+    case "json": return .yellow.opacity(0.8)
+    case "md": return Color(red: 0.5, green: 0.7, blue: 0.9)
+    case "html": return .orange
+    case "css": return Color(red: 0.3, green: 0.5, blue: 0.8)
+    case "sh", "zsh", "bash": return .green
+    default: return nil
     }
 }
