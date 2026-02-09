@@ -5,14 +5,15 @@ struct FileTreeSidebar: View {
 
     var body: some View {
         let theme = workspace.theme
+        let topInset: CGFloat = 28
         Group {
             if workspace.fileTree.isEmpty {
                 VStack(spacing: 16) {
                     Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 36))
+                        .font(.system(size: Typography.iconL))
                         .foregroundStyle(.secondary)
                     Text("No Folder Open")
-                        .font(.title3)
+                        .font(.system(size: Typography.l, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("NoFolderLabel")
                     Button {
@@ -24,14 +25,11 @@ struct FileTreeSidebar: View {
                     .controlSize(.large)
                     .accessibilityIdentifier("OpenFolderButton")
                     Text("⌘⇧O")
-                        .font(.caption)
+                        .font(.system(size: Typography.s))
                         .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.secondaryBackgroundColor)
-            } else if workspace.isSearchPresented {
-                SearchPanelView(workspace: workspace)
-                    .background(theme.secondaryBackgroundColor)
             } else {
                 List(selection: $workspace.selectedFileURL) {
                     Section(workspace.rootDirectory?.lastPathComponent ?? "Files") {
@@ -51,6 +49,7 @@ struct FileTreeSidebar: View {
                 }
             }
         }
+        .padding(.top, topInset)
     }
 }
 
@@ -70,6 +69,7 @@ struct FileTreeRow: View {
             rowChrome {
                 fileLabel
             }
+            .contextMenu { fileContextMenu }
                 .tag(item.id)
                 .accessibilityIdentifier("FileTreeItem_\(item.name)")
         }
@@ -81,15 +81,16 @@ struct FileTreeRow: View {
             rowChrome {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: Typography.s, weight: .bold))
                         .foregroundStyle(.tertiary)
                         .rotationEffect(isExpanded ? .degrees(90) : .zero)
                         .animation(.easeInOut(duration: 0.15), value: isExpanded)
                         .frame(width: 20, height: 20)
                     Image(systemName: isExpanded ? "folder.fill" : "folder")
                         .foregroundStyle(.blue)
-                        .font(.system(size: 13))
+                        .font(.system(size: Typography.base))
                     Text(item.name)
+                        .font(.system(size: Typography.base))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
@@ -106,6 +107,7 @@ struct FileTreeRow: View {
                 .onHover { isHovered = $0 }
                 .accessibilityIdentifier("FileTreeItem_\(item.name)")
             }
+            .contextMenu { folderContextMenu }
 
             if isExpanded, let children = item.children {
                 let visibleChildren = children.filter { !$0.isLazyPlaceholder }
@@ -126,8 +128,9 @@ struct FileTreeRow: View {
         return HStack(spacing: 6) {
             Image(systemName: iconForFile(item.name))
                 .foregroundStyle(colorForFile(item.name)?.opacity(0.8) ?? .secondary)
-                .font(.system(size: 13))
+                .font(.system(size: Typography.base))
             Text(item.name)
+                .font(.system(size: Typography.base))
                 .lineLimit(1)
                 .truncationMode(.middle)
             if isModified {
@@ -137,6 +140,35 @@ struct FileTreeRow: View {
                     .accessibilityLabel("Unsaved changes")
             }
             Spacer()
+        }
+    }
+
+    private var fileContextMenu: some View {
+        Group {
+            Button("Copy Path") { workspace.copyFilePath(item.id) }
+            Button("Copy Relative Path") { workspace.copyRelativeFilePath(item.id) }
+            Divider()
+            Button("Reveal in Finder") { workspace.revealInFinder(item.id) }
+            Button("Open in Terminal") { workspace.openInTerminal(item.id) }
+            Divider()
+            Button("Rename...") { workspace.renameItem(item) }
+            Button("Delete", role: .destructive) { workspace.deleteItem(item) }
+        }
+    }
+
+    private var folderContextMenu: some View {
+        Group {
+            Button("New File") { workspace.createFile(in: item.id) }
+            Button("New Folder") { workspace.createFolder(in: item.id) }
+            Divider()
+            Button("Copy Path") { workspace.copyFilePath(item.id) }
+            Button("Copy Relative Path") { workspace.copyRelativeFilePath(item.id) }
+            Divider()
+            Button("Reveal in Finder") { workspace.revealInFinder(item.id) }
+            Button("Open in Terminal") { workspace.openInTerminal(item.id) }
+            Divider()
+            Button("Rename...") { workspace.renameItem(item) }
+            Button("Delete", role: .destructive) { workspace.deleteItem(item) }
         }
     }
 
@@ -153,7 +185,7 @@ struct FileTreeRow: View {
                     IndentGuides(
                         level: level,
                         indent: indentWidth,
-                        color: workspace.theme.dividerColor.opacity(0.5)
+                        color: workspace.theme.dividerColor.opacity(0.35)
                     )
                 }
             }
