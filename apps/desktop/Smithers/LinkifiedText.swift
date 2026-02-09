@@ -8,9 +8,12 @@ struct LinkifiedText: View {
     let baseColor: Color
     var linkColor: Color = .blue
     var selectionEnabled: Bool = false
+    var linkifyEnabled: Bool = true
+    var maxLinkifyLength: Int? = nil
 
     var body: some View {
-        let attributed = linkify(text)
+        let shouldLinkify = linkifyEnabled && (maxLinkifyLength.map { text.count <= $0 } ?? true)
+        let attributed = shouldLinkify ? linkify(text) : makeSegment(text, color: baseColor)
         if selectionEnabled {
             Text(attributed)
                 .textSelection(.enabled)
