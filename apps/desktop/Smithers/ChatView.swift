@@ -468,6 +468,7 @@ struct ChatView: View {
                         )
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
