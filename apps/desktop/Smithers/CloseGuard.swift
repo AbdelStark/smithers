@@ -4,6 +4,7 @@ import AppKit
 final class WindowCloseDelegate: NSObject, NSWindowDelegate {
     weak var workspace: WorkspaceState?
     private var bypassNextClose = false
+    private static let windowFrameKey = "smithers.windowFrame"
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let workspace else { return true }
@@ -24,12 +25,37 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
         }
         return false
     }
+
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        persistWindowFrame(window)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        persistWindowFrame(window)
+    }
+
+    static func loadWindowFrame() -> NSRect? {
+        guard let raw = UserDefaults.standard.string(forKey: windowFrameKey) else { return nil }
+        let frame = NSRectFromString(raw)
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        return frame
+    }
+
+    private func persistWindowFrame(_ window: NSWindow) {
+        UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.windowFrameKey)
+    }
 }
 
 @MainActor
 final class SmithersAppDelegate: NSObject, NSApplicationDelegate {
     weak var workspace: WorkspaceState?
     private var terminationInProgress = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        PressAndHoldDisabler.disable()
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let workspace else { return .terminateNow }
