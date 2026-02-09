@@ -41,6 +41,7 @@ struct SearchMatch: Identifiable, Hashable, Sendable {
     let id = UUID()
     let lineNumber: Int
     let column: Int
+    let matchLength: Int
     let lineText: String
 }
 
@@ -70,6 +71,7 @@ struct EditorSelection: Hashable, Sendable {
     let url: URL
     let line: Int
     let column: Int
+    let length: Int
 }
 
 private enum SearchOutcome {
@@ -177,6 +179,7 @@ class WorkspaceState: ObservableObject {
         }
     }
     @Published var currentLanguage: SupportedLanguage?
+    @Published var isEditorLoading: Bool = false
     @Published var chatMessages: [ChatMessage] = WorkspaceState.initialChatMessages() {
         didSet {
             scheduleChatHistoryPersist()
@@ -191,7 +194,10 @@ class WorkspaceState: ObservableObject {
     @Published var isTurnInProgress: Bool = false
     @Published var isCommandPalettePresented: Bool = false
     @Published var isSearchPresented: Bool = false
+    @Published var sidebarVisibility: NavigationSplitViewVisibility = .doubleColumn
     @Published var isNvimModeEnabled: Bool = false
+    @Published var cursorLine: Int = 1
+    @Published var cursorColumn: Int = 1
     @Published var isAutoSaveEnabled: Bool = UserDefaults.standard.bool(
         forKey: WorkspaceState.autoSaveEnabledKey
     ) {
@@ -281,6 +287,11 @@ class WorkspaceState: ObservableObject {
     @Published private(set) var recentFolderEntries: [RecentFolderEntry] = []
     @Published private(set) var recentEditEntries: [RecentEditEntry] = []
     @Published var toastMessage: String?
+    @Published private(set) var progressValue: Double = 0
+    @Published private(set) var isProgressBarVisible: Bool = false
+    @Published var progressBarHeight: CGFloat = 3
+    @Published var progressBarFillColor: NSColor?
+    @Published var progressBarTrackColor: NSColor?
     @Published var pendingSelection: EditorSelection?
     private var fileLoadTask: Task<Void, Never>?
     private var fileIndex: [FileIndexEntry] = []
@@ -303,6 +314,8 @@ class WorkspaceState: ObservableObject {
     private var recentEditTimestamps: [URL: Date] = [:]
     private var toastTask: Task<Void, Never>?
     private var toastToken: Int = 0
+    private var progressHideTask: Task<Void, Never>?
+    private var progressHideToken: Int = 0
     private var autoSaveTask: Task<Void, Never>?
     private var autoSaveToken: Int = 0
     private var chatHistoryPersistTask: Task<Void, Never>?
@@ -329,14 +342,15 @@ class WorkspaceState: ObservableObject {
     private static let autoSaveEnabledKey = "smithers.autoSaveEnabled"
     private static let autoSaveIntervalKey = "smithers.autoSaveInterval"
     private static let defaultAutoSaveInterval: TimeInterval = 5
+    private static let progressBarAutoHideDelay: TimeInterval = 0.45
     private static let editorFontNameKey = "smithers.editorFontName"
     private static let editorFontSizeKey = "smithers.editorFontSize"
     private static let nvimPathKey = "smithers.nvimPath"
     private static let optionAsMetaKey = "smithers.optionAsMeta"
     private static let defaultEditorFontSize: Double = 13
     private static let defaultEditorFontName: String = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).fontName
-    private static let minEditorFontSize: Double = 9
-    private static let maxEditorFontSize: Double = 32
+    static let minEditorFontSize: Double = 9
+    static let maxEditorFontSize: Double = 32
     private var terminalCounter = 0
     private let ghosttyApp = GhosttyApp.shared
     private var nvimController: NvimController?
@@ -628,6 +642,7 @@ class WorkspaceState: ObservableObject {
         openFiles = []
         selectedFileURL = nil
         setEditorText("")
+        isEditorLoading = false
         currentLanguage = nil
         fileLoadTask?.cancel()
         openFileContents = [:]
@@ -688,18 +703,21 @@ class WorkspaceState: ObservableObject {
             return
         }
         if isChatURL(url) {
+            isEditorLoading = false
             openChat()
             return
         }
         if isTerminalURL(url) {
             selectedFileURL = url
             currentLanguage = nil
+            isEditorLoading = false
             setEditorText("")
             return
         }
         if isDiffURL(url) {
             selectedFileURL = url
             currentLanguage = nil
+            isEditorLoading = false
             setEditorText("")
             return
         }
@@ -711,6 +729,7 @@ class WorkspaceState: ObservableObject {
             addRecentFile(url)
         }
         if isNvimModeEnabled {
+            isEditorLoading = false
             openFileInNvim(url, line: nil, column: nil)
             return
         }
@@ -724,9 +743,11 @@ class WorkspaceState: ObservableObject {
             if savedFileContents[url] == nil {
                 savedFileContents[url] = cached
             }
+            isEditorLoading = false
             setEditorText(cached)
             return
         }
+        isEditorLoading = true
         setEditorText("")
         let requestedURL = url
         fileLoadTask = Task { [weak self] in
@@ -742,6 +763,7 @@ class WorkspaceState: ObservableObject {
             }
             guard self.selectedFileURL == requestedURL else { return }
             self.setEditorText(text)
+            self.isEditorLoading = false
             self.updateWindowTitle()
         }
     }
@@ -1036,6 +1058,99 @@ class WorkspaceState: ObservableObject {
         }
         // Also rebuild the file index for command palette search
         rebuildFileIndex()
+    }
+
+    private func reloadFileTree(at folderURL: URL) {
+        guard let rootDirectory else { return }
+        let children = FileItem.loadShallowChildren(of: folderURL)
+        if folderURL == rootDirectory {
+            fileTree = children
+        } else {
+            var updated = fileTree
+            FileItem.replaceChildren(in: &updated, for: folderURL, with: children)
+            fileTree = updated
+        }
+        rebuildFileIndex()
+    }
+
+    private func updateOpenFilesForFileRename(from oldURL: URL, to newURL: URL) {
+        if let index = openFiles.firstIndex(of: oldURL) {
+            openFiles[index] = newURL
+        }
+        if selectedFileURL == oldURL {
+            selectedFileURL = newURL
+        }
+        if let cached = openFileContents.removeValue(forKey: oldURL) {
+            openFileContents[newURL] = cached
+        }
+        if let cached = openFileContents.removeValue(forKey: oldURL.standardizedFileURL) {
+            openFileContents[newURL.standardizedFileURL] = cached
+        }
+        if let saved = savedFileContents.removeValue(forKey: oldURL) {
+            savedFileContents[newURL] = saved
+        }
+        if let saved = savedFileContents.removeValue(forKey: oldURL.standardizedFileURL) {
+            savedFileContents[newURL.standardizedFileURL] = saved
+        }
+    }
+
+    private func updateOpenFilesForFolderRename(from oldURL: URL, to newURL: URL) {
+        let oldPath = oldURL.path.hasSuffix("/") ? oldURL.path : oldURL.path + "/"
+        let newPath = newURL.path.hasSuffix("/") ? newURL.path : newURL.path + "/"
+
+        openFiles = openFiles.map { url in
+            guard url.path.hasPrefix(oldPath) else { return url }
+            let suffix = String(url.path.dropFirst(oldPath.count))
+            return URL(fileURLWithPath: newPath + suffix)
+        }
+
+        if let selectedFileURL, selectedFileURL.path.hasPrefix(oldPath) {
+            let suffix = String(selectedFileURL.path.dropFirst(oldPath.count))
+            self.selectedFileURL = URL(fileURLWithPath: newPath + suffix)
+        }
+
+        func remapKeys(_ input: [URL: String]) -> [URL: String] {
+            var output: [URL: String] = [:]
+            output.reserveCapacity(input.count)
+            for (url, value) in input {
+                if url.path.hasPrefix(oldPath) {
+                    let suffix = String(url.path.dropFirst(oldPath.count))
+                    let updated = URL(fileURLWithPath: newPath + suffix)
+                    output[updated] = value
+                } else {
+                    output[url] = value
+                }
+            }
+            return output
+        }
+
+        openFileContents = remapKeys(openFileContents)
+        savedFileContents = remapKeys(savedFileContents)
+    }
+
+    private func closeOpenFiles(in folderURL: URL) {
+        let prefix = folderURL.path.hasSuffix("/") ? folderURL.path : folderURL.path + "/"
+        let targets = openFiles.filter { $0.path.hasPrefix(prefix) }
+        for url in targets {
+            requestCloseFile(url)
+        }
+    }
+
+    private func promptForName(title: String, message: String, defaultValue: String? = nil) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
+        if let defaultValue {
+            input.stringValue = defaultValue
+        }
+        alert.accessoryView = input
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return nil }
+        let trimmed = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func fileTreeContains(url: URL, in items: [FileItem]) -> Bool {
@@ -1462,17 +1577,17 @@ class WorkspaceState: ObservableObject {
         } else {
             selectFile(resolved)
             if let line {
-                pendingSelection = EditorSelection(url: resolved, line: line, column: column ?? 1)
+                pendingSelection = EditorSelection(url: resolved, line: line, column: column ?? 1, length: 0)
             }
         }
         return true
     }
 
     func openSearchResult(_ result: SearchResult, match: SearchMatch) {
-        openFileAtLocation(result.url, line: match.lineNumber, column: match.column)
+        openFileAtLocation(result.url, line: match.lineNumber, column: match.column, length: match.matchLength)
     }
 
-    func openFileAtLocation(_ url: URL, line: Int, column: Int) {
+    func openFileAtLocation(_ url: URL, line: Int, column: Int, length: Int = 0) {
         if isNvimModeEnabled {
             if selectedFileURL != url {
                 suppressSelectionSync = true
@@ -1481,7 +1596,7 @@ class WorkspaceState: ObservableObject {
             return
         }
         selectFile(url)
-        pendingSelection = EditorSelection(url: url, line: line, column: column)
+        pendingSelection = EditorSelection(url: url, line: line, column: column, length: length)
     }
 
     func closeSelectedTab() {
@@ -1497,11 +1612,59 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    func closeAllExcept(_ url: URL) {
+        let tabs = openFiles.filter { $0 != url }
+        for tab in tabs {
+            requestCloseFile(tab)
+        }
+    }
+
     func closeAllTabs() {
         let tabs = openFiles
         for url in tabs {
             requestCloseFile(url)
         }
+    }
+
+    func closeTabsToRight(of url: URL) {
+        guard let index = openFiles.firstIndex(of: url) else { return }
+        let startIndex = openFiles.index(after: index)
+        guard startIndex < openFiles.endIndex else { return }
+        let tabs = Array(openFiles[startIndex...])
+        for tab in tabs {
+            requestCloseFile(tab)
+        }
+    }
+
+    func moveTab(from source: URL, to target: URL) {
+        guard source != target,
+              let fromIndex = openFiles.firstIndex(of: source),
+              let toIndex = openFiles.firstIndex(of: target)
+        else { return }
+        var tabs = openFiles
+        tabs.remove(at: fromIndex)
+        let adjustedIndex = toIndex > fromIndex ? max(0, toIndex - 1) : toIndex
+        tabs.insert(source, at: adjustedIndex)
+        openFiles = tabs
+    }
+
+    func copyFilePath(_ url: URL) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.path, forType: .string)
+        showToast("Path copied")
+    }
+
+    func copyRelativeFilePath(_ url: URL) {
+        let path = displayPath(for: url)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(path, forType: .string)
+        showToast("Relative path copied")
+    }
+
+    func revealInFinder(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     func revealSelectedFileInFinder() {
@@ -1578,6 +1741,12 @@ class WorkspaceState: ObservableObject {
         clearSearchPreview()
     }
 
+    func toggleSidebarVisibility() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            sidebarVisibility = sidebarVisibility == .detailOnly ? .doubleColumn : .detailOnly
+        }
+    }
+
     func updateSearchPreview(result: SearchResult, match: SearchMatch) {
         searchPreviewTask?.cancel()
         searchPreviewToken += 1
@@ -1615,6 +1784,91 @@ class WorkspaceState: ObservableObject {
         var updated = fileTree
         FileItem.replaceChildren(in: &updated, for: item.id, with: children)
         fileTree = updated
+    }
+
+    func createFile(in folder: URL) {
+        let panel = NSSavePanel()
+        panel.directoryURL = folder
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "untitled.txt"
+        if panel.runModal() == .OK, let url = panel.url {
+            let success = FileManager.default.createFile(atPath: url.path, contents: Data())
+            if success {
+                refreshFileTreeForNewFile(url)
+                showToast("File created")
+            } else {
+                appendErrorMessage("Failed to create file.")
+            }
+        }
+    }
+
+    func createFolder(in folder: URL) {
+        guard let name = promptForName(title: "New Folder", message: "Enter a folder name.") else { return }
+        let url = folder.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+            reloadFileTree(at: folder)
+            showToast("Folder created")
+        } catch {
+            appendErrorMessage("Failed to create folder: \(error.localizedDescription)")
+        }
+    }
+
+    func renameItem(_ item: FileItem) {
+        guard let name = promptForName(
+            title: "Rename",
+            message: "Enter a new name.",
+            defaultValue: item.name
+        ) else { return }
+        let parent = item.id.deletingLastPathComponent()
+        let newURL = parent.appendingPathComponent(name)
+        guard newURL != item.id else { return }
+        do {
+            try FileManager.default.moveItem(at: item.id, to: newURL)
+            if item.isFolder {
+                updateOpenFilesForFolderRename(from: item.id, to: newURL)
+            } else {
+                updateOpenFilesForFileRename(from: item.id, to: newURL)
+            }
+            reloadFileTree(at: parent)
+            showToast("Renamed")
+        } catch {
+            appendErrorMessage("Failed to rename: \(error.localizedDescription)")
+        }
+    }
+
+    func deleteItem(_ item: FileItem) {
+        let alert = NSAlert()
+        alert.messageText = "Delete \"\(item.name)\"?"
+        alert.informativeText = "This will move the item to the Trash."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+        do {
+            try FileManager.default.trashItem(at: item.id, resultingItemURL: nil)
+            let parent = item.id.deletingLastPathComponent()
+            if item.isFolder {
+                closeOpenFiles(in: item.id)
+            } else {
+                requestCloseFile(item.id)
+            }
+            reloadFileTree(at: parent)
+            showToast("Moved to Trash")
+        } catch {
+            appendErrorMessage("Failed to delete: \(error.localizedDescription)")
+        }
+    }
+
+    func openInTerminal(_ itemURL: URL) {
+        let target = (try? itemURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            ? itemURL
+            : itemURL.deletingLastPathComponent()
+        let process = Process()
+        process.launchPath = "/usr/bin/open"
+        process.arguments = ["-a", "Terminal", target.path]
+        try? process.run()
     }
 
     func openFolderPanel() {
@@ -2045,6 +2299,27 @@ class WorkspaceState: ObservableObject {
                 guard token == self.autoSaveToken else { return }
                 guard self.isNativeFileModified(targetURL) else { return }
                 self.saveNativeFile(targetURL, notify: false)
+            }
+        }
+    }
+
+    func setProgress(_ value: Double) {
+        let sanitized = value.isFinite ? value : 0
+        let clamped = min(max(sanitized, 0), 1)
+        progressHideToken += 1
+        let token = progressHideToken
+        progressHideTask?.cancel()
+        progressHideTask = nil
+        progressValue = clamped
+        if !isProgressBarVisible {
+            isProgressBarVisible = true
+        }
+        if clamped >= 1 {
+            progressHideTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.progressBarAutoHideDelay * 1_000_000_000))
+                guard let self, token == self.progressHideToken else { return }
+                self.isProgressBarVisible = false
+                self.progressValue = 0
             }
         }
     }
@@ -2777,6 +3052,8 @@ class WorkspaceState: ObservableObject {
                       let firstMatch = submatches.first,
                       let column = (firstMatch["start"] as? NSNumber)?.intValue
                 else { continue }
+                let matchEnd = (firstMatch["end"] as? NSNumber)?.intValue ?? column + 1
+                let matchLength = max(1, matchEnd - column)
 
                 let fileURL: URL
                 if path.hasPrefix("/") {
@@ -2786,7 +3063,12 @@ class WorkspaceState: ObservableObject {
                 }
                 let displayPath = relativePath(for: fileURL, rootPath: rootPath)
                 let trimmedLine = lineText.trimmingCharacters(in: .newlines)
-                let match = SearchMatch(lineNumber: lineNumber, column: column + 1, lineText: trimmedLine)
+                let match = SearchMatch(
+                    lineNumber: lineNumber,
+                    column: column + 1,
+                    matchLength: matchLength,
+                    lineText: trimmedLine
+                )
                 if let index = indexByPath[path] {
                     results[index].matches.append(match)
                 } else {
