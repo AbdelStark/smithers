@@ -344,6 +344,7 @@ class WorkspaceState: ObservableObject {
     private var codexService: CodexService?
     private var codexEventsTask: Task<Void, Never>?
     private var activeThreadId: String?
+    private var turnHistoryOrder: [String] = []
     nonisolated private static let maxSearchResults = 200
     nonisolated private static let skipDirectoryNames: Set<String> = [
         ".git",
@@ -512,12 +513,17 @@ class WorkspaceState: ObservableObject {
     }
 
     private func applyThreadHistory(_ thread: ThreadSnapshot) {
+        setTurnHistoryOrder(from: thread)
         let messages = Self.chatMessages(from: thread)
         suppressChatHistoryPersistence = true
         chatMessages = messages.isEmpty ? Self.initialChatMessages() : messages
         suppressChatHistoryPersistence = false
         isTurnInProgress = false
         rebuildDiffSnapshots(from: chatMessages)
+    }
+
+    private func setTurnHistoryOrder(from thread: ThreadSnapshot) {
+        turnHistoryOrder = thread.turns.map(\.id)
     }
 
     private static func chatMessages(from thread: ThreadSnapshot) -> [ChatMessage] {
@@ -528,17 +534,17 @@ class WorkspaceState: ObservableObject {
                 case .userMessage(let userItem):
                     let text = userText(from: userItem)
                     if !text.isEmpty {
-                        messages.append(ChatMessage(role: .user, kind: .text(text)))
+                        messages.append(ChatMessage(role: .user, kind: .text(text), turnId: turn.id))
                     }
                 case .agentMessage(let agentItem):
                     let text = agentItem.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
-                        messages.append(ChatMessage(role: .assistant, kind: .text(text)))
+                        messages.append(ChatMessage(role: .assistant, kind: .text(text), turnId: turn.id))
                     }
                 case .plan(let planItem):
                     let text = planItem.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
-                        messages.append(ChatMessage(role: .assistant, kind: .status("Plan:\n\(text)")))
+                        messages.append(ChatMessage(role: .assistant, kind: .status("Plan:\n\(text)"), turnId: turn.id))
                     }
                 case .commandExecution(let commandItem):
                     let output = commandItem.aggregatedOutput ?? ""
@@ -551,10 +557,10 @@ class WorkspaceState: ObservableObject {
                         exitCode: commandItem.exitCode,
                         status: status
                     )
-                    messages.append(ChatMessage(role: .assistant, kind: .command(info)))
+                    messages.append(ChatMessage(role: .assistant, kind: .command(info), turnId: turn.id))
                 case .fileChange(let fileItem):
                     let preview = DiffPreview.fromFileChange(turnId: turn.id, item: fileItem)
-                    messages.append(ChatMessage(role: .assistant, kind: .diffPreview(preview)))
+                    messages.append(ChatMessage(role: .assistant, kind: .diffPreview(preview), turnId: turn.id))
                 case .reasoning:
                     continue
                 case .other:
@@ -641,6 +647,7 @@ class WorkspaceState: ObservableObject {
         turnDiffs = [:]
         turnDiffOrder = []
         streamingTurnDiffs = [:]
+        turnHistoryOrder = []
         diffTabs = [:]
         let storedThreadId = ThreadHistoryStore.loadThreadId(for: url)
         activeThreadId = storedThreadId
@@ -2152,6 +2159,217 @@ class WorkspaceState: ObservableObject {
         turnDiffs = [:]
         turnDiffOrder = []
         streamingTurnDiffs = [:]
+        turnHistoryOrder = []
+    }
+
+    func canCopyMessage(_ message: ChatMessage) -> Bool {
+        switch message.kind {
+        case .starterPrompt:
+            return false
+        default:
+            return true
+        }
+    }
+
+    func copyChatMessage(_ message: ChatMessage) {
+        guard let text = plainText(for: message) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        showToast("Copied to clipboard")
+    }
+
+    func canForkMessage(_ message: ChatMessage) -> Bool {
+        guard !isTurnInProgress else { return false }
+        guard activeThreadId != nil else { return false }
+        return message.turnId != nil
+    }
+
+    func forkChat(from message: ChatMessage) {
+        guard let turnId = message.turnId else {
+            showToast("Cannot fork from this message.")
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.forkChatInternal(turnId: turnId)
+        }
+    }
+
+    func canRetryMessage(_ message: ChatMessage) -> Bool {
+        guard !isTurnInProgress else { return false }
+        guard message.role == .assistant else { return false }
+        switch message.kind {
+        case .text, .status:
+            return true
+        default:
+            return false
+        }
+    }
+
+    func retryFromMessage(_ message: ChatMessage) {
+        guard !isTurnInProgress else {
+            showToast("Wait for the current turn to finish.")
+            return
+        }
+        guard let index = chatMessages.firstIndex(where: { $0.id == message.id }) else { return }
+        guard let userMessage = chatMessages[0..<index].last(where: { $0.role == .user }),
+              case .text(let text) = userMessage.kind
+        else {
+            showToast("No user message to retry.")
+            return
+        }
+        sendChatMessage(text: text)
+    }
+
+    func canEditMessage(_ message: ChatMessage) -> Bool {
+        guard !isTurnInProgress else { return false }
+        guard message.role == .user else { return false }
+        if case .text = message.kind {
+            return true
+        }
+        return false
+    }
+
+    func editAndResendMessage(_ message: ChatMessage) {
+        guard !isTurnInProgress else {
+            showToast("Wait for the current turn to finish.")
+            return
+        }
+        guard case .text(let text) = message.kind else { return }
+        if let turnId = message.turnId, canForkMessage(message) {
+            Task { [weak self] in
+                guard let self else { return }
+                let success = await self.forkChatInternal(turnId: turnId)
+                if success {
+                    self.chatDraft = text
+                    self.openChat()
+                }
+            }
+        } else {
+            chatDraft = text
+            openChat()
+        }
+    }
+
+    func canRollbackToMessage(_ message: ChatMessage) -> Bool {
+        guard !isTurnInProgress else { return false }
+        guard activeThreadId != nil else { return false }
+        guard let turnId = message.turnId,
+              let index = turnHistoryOrder.firstIndex(of: turnId)
+        else {
+            return false
+        }
+        let numTurns = turnHistoryOrder.count - index - 1
+        return numTurns > 0
+    }
+
+    func rollbackChat(to message: ChatMessage) {
+        guard !isTurnInProgress else {
+            showToast("Wait for the current turn to finish.")
+            return
+        }
+        guard let turnId = message.turnId,
+              let currentThreadId = activeThreadId,
+              let index = turnHistoryOrder.firstIndex(of: turnId)
+        else {
+            showToast("Cannot rollback from this message.")
+            return
+        }
+        let numTurns = turnHistoryOrder.count - index - 1
+        guard numTurns > 0 else {
+            showToast("Already at this point.")
+            return
+        }
+        guard confirmRollback(numTurns: numTurns) else { return }
+        guard let codexService else {
+            appendErrorMessage("Codex service is not running.")
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let thread = try await codexService.rollbackThread(threadId: currentThreadId, numTurns: numTurns)
+                self.applyThreadHistory(thread)
+                self.showToast("Rolled back chat history.")
+            } catch {
+                self.appendErrorMessage("Failed to rollback: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func forkChatInternal(turnId: String) async -> Bool {
+        guard !isTurnInProgress else {
+            showToast("Wait for the current turn to finish.")
+            return false
+        }
+        guard let rootDirectory else { return false }
+        guard let codexService else {
+            appendErrorMessage("Codex service is not running.")
+            return false
+        }
+        guard let currentThreadId = activeThreadId else {
+            showToast("No active thread to fork.")
+            return false
+        }
+        guard let index = turnHistoryOrder.firstIndex(of: turnId) else {
+            showToast("Unable to locate that turn.")
+            return false
+        }
+        let numTurnsToDrop = turnHistoryOrder.count - index - 1
+        do {
+            let forked = try await codexService.forkThread(threadId: currentThreadId, cwd: rootDirectory.path)
+            var finalThread = forked
+            if numTurnsToDrop > 0 {
+                finalThread = try await codexService.rollbackThread(threadId: forked.id, numTurns: numTurnsToDrop)
+            }
+            applyThreadHistory(finalThread)
+            updateActiveThreadId(finalThread.id)
+            openChat()
+            if numTurnsToDrop > 0 {
+                showToast("Forked chat history. File changes were not reverted.")
+            } else {
+                showToast("Forked chat.")
+            }
+            return true
+        } catch {
+            appendErrorMessage("Failed to fork: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func plainText(for message: ChatMessage) -> String? {
+        switch message.kind {
+        case .text(let text):
+            return text
+        case .status(let text):
+            return text
+        case .command(let info):
+            var output = "$ \(info.command)"
+            if !info.cwd.isEmpty {
+                output += "\n" + "cwd: \(info.cwd)"
+            }
+            if !info.output.isEmpty {
+                output += "\n" + info.output
+            }
+            if let exitCode = info.exitCode {
+                output += "\n" + "exit \(exitCode)"
+            }
+            return output
+        case .diffPreview(let preview):
+            return preview.diff
+        case .starterPrompt:
+            return nil
+        }
+    }
+
+    private func confirmRollback(numTurns: Int) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Rollback chat to this point?"
+        alert.informativeText = "This removes the last \(numTurns) turns from chat history. File changes are not reverted."
+        alert.addButton(withTitle: "Rollback")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func interruptTurn() {
@@ -2719,27 +2937,29 @@ class WorkspaceState: ObservableObject {
 
     private func handleCodexEvent(_ event: CodexEvent) {
         switch event {
-        case .turnStarted:
+        case .turnStarted(let turnId):
             isTurnInProgress = true
-        case .agentMessageDelta(let text):
-            applyAgentMessageDelta(text)
-        case .agentMessageCompleted(let text):
-            finalizeAgentMessage(text: text)
-        case .commandStarted(let itemId, let command, let cwd):
-            appendCommandMessage(itemId: itemId, command: command, cwd: cwd)
-        case .commandOutput(let itemId, let text):
-            appendCommandOutput(itemId: itemId, text: text)
-        case .commandCompleted(let itemId, let exitCode):
-            completeCommand(itemId: itemId, exitCode: exitCode)
+            registerTurnIfNeeded(turnId)
+            attachTurnToLastUserMessage(turnId)
+        case .agentMessageDelta(let turnId, let text):
+            applyAgentMessageDelta(turnId: turnId, delta: text)
+        case .agentMessageCompleted(let turnId, let text):
+            finalizeAgentMessage(turnId: turnId, text: text)
+        case .commandStarted(let turnId, let itemId, let command, let cwd):
+            appendCommandMessage(turnId: turnId, itemId: itemId, command: command, cwd: cwd)
+        case .commandOutput(let turnId, let itemId, let text):
+            appendCommandOutput(turnId: turnId, itemId: itemId, text: text)
+        case .commandCompleted(let turnId, let itemId, let exitCode):
+            completeCommand(turnId: turnId, itemId: itemId, exitCode: exitCode)
         case .fileChange(let turnId, let item):
             appendDiffPreview(from: item, turnId: turnId)
         case .fileChangeDelta(let turnId, _, let delta):
             appendStreamingDiff(turnId: turnId, delta: delta)
         case .turnDiffUpdated(let turnId, let diff):
             updateTurnDiffPreview(turnId: turnId, diff: diff)
-        case .turnCompleted(let status):
+        case .turnCompleted(_, let status):
             isTurnInProgress = false
-            finalizeAgentMessage(text: nil)
+            finalizeAgentMessage(turnId: nil, text: nil)
             if status == "failed" {
                 appendErrorMessage("Turn failed.")
             } else if status == "interrupted" {
@@ -2753,53 +2973,72 @@ class WorkspaceState: ObservableObject {
         }
     }
 
-    private func applyAgentMessageDelta(_ delta: String) {
+    private func registerTurnIfNeeded(_ turnId: String) {
+        if !turnHistoryOrder.contains(turnId) {
+            turnHistoryOrder.append(turnId)
+        }
+    }
+
+    private func attachTurnToLastUserMessage(_ turnId: String) {
+        guard let index = chatMessages.lastIndex(where: { $0.role == .user && $0.turnId == nil }) else { return }
+        var message = chatMessages[index]
+        message.turnId = turnId
+        chatMessages[index] = message
+    }
+
+    private func applyAgentMessageDelta(turnId: String, delta: String) {
         if let index = chatMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
             var message = chatMessages[index]
+            message.turnId = message.turnId ?? turnId
             message.appendText(delta)
             chatMessages[index] = message
         } else {
-            let message = ChatMessage(role: .assistant, kind: .text(delta), isStreaming: true)
+            let message = ChatMessage(role: .assistant, kind: .text(delta), isStreaming: true, turnId: turnId)
             chatMessages.append(message)
         }
     }
 
-    private func finalizeAgentMessage(text: String?) {
+    private func finalizeAgentMessage(turnId: String?, text: String?) {
         guard let index = chatMessages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) else { return }
         var message = chatMessages[index]
         if let text {
             message.setText(text)
         }
+        if let turnId {
+            message.turnId = turnId
+        }
         message.isStreaming = false
         chatMessages[index] = message
     }
 
-    private func appendCommandMessage(itemId: String, command: String, cwd: String) {
+    private func appendCommandMessage(turnId: String, itemId: String, command: String, cwd: String) {
         let info = CommandExecutionInfo(itemId: itemId, command: command, cwd: cwd, output: "", exitCode: nil, status: .running)
-        let message = ChatMessage(role: .assistant, kind: .command(info))
+        let message = ChatMessage(role: .assistant, kind: .command(info), turnId: turnId)
         chatMessages.append(message)
     }
 
-    private func appendCommandOutput(itemId: String, text: String) {
+    private func appendCommandOutput(turnId: String, itemId: String, text: String) {
         guard let index = chatMessages.lastIndex(where: { $0.commandItemId == itemId }) else {
-            appendCommandMessage(itemId: itemId, command: "command", cwd: "", output: text)
+            appendCommandMessage(turnId: turnId, itemId: itemId, command: "command", cwd: "", output: text)
             return
         }
         var message = chatMessages[index]
+        message.turnId = message.turnId ?? turnId
         message.appendCommandOutput(text)
         chatMessages[index] = message
     }
 
-    private func completeCommand(itemId: String, exitCode: Int?) {
+    private func completeCommand(turnId: String, itemId: String, exitCode: Int?) {
         guard let index = chatMessages.lastIndex(where: { $0.commandItemId == itemId }) else { return }
         var message = chatMessages[index]
+        message.turnId = message.turnId ?? turnId
         message.completeCommand(exitCode: exitCode)
         chatMessages[index] = message
     }
 
-    private func appendCommandMessage(itemId: String, command: String, cwd: String, output: String) {
+    private func appendCommandMessage(turnId: String, itemId: String, command: String, cwd: String, output: String) {
         let info = CommandExecutionInfo(itemId: itemId, command: command, cwd: cwd, output: output, exitCode: nil, status: .running)
-        let message = ChatMessage(role: .assistant, kind: .command(info))
+        let message = ChatMessage(role: .assistant, kind: .command(info), turnId: turnId)
         chatMessages.append(message)
     }
 
@@ -2871,9 +3110,10 @@ class WorkspaceState: ObservableObject {
            }) {
             var message = chatMessages[index]
             message.kind = .diffPreview(preview)
+            message.turnId = turnId
             chatMessages[index] = message
         } else {
-            let message = ChatMessage(role: .assistant, kind: .diffPreview(preview))
+            let message = ChatMessage(role: .assistant, kind: .diffPreview(preview), turnId: preview.turnId)
             chatMessages.append(message)
         }
     }

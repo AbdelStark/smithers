@@ -69,19 +69,22 @@ private struct ChatHistoryPayload: Codable {
 private struct ChatHistoryMessage: Codable {
     let role: ChatHistoryRole
     let kind: ChatHistoryKind
+    let turnId: String?
 
-    init(role: ChatHistoryRole, kind: ChatHistoryKind) {
+    init(role: ChatHistoryRole, kind: ChatHistoryKind, turnId: String?) {
         self.role = role
         self.kind = kind
+        self.turnId = turnId
     }
 
     init(_ message: ChatMessage) {
         role = ChatHistoryRole(message.role)
         kind = ChatHistoryKind(message.kind)
+        turnId = message.turnId
     }
 
     func asChatMessage() -> ChatMessage {
-        ChatMessage(role: role.asChatRole(), kind: kind.asChatKind(), isStreaming: false)
+        ChatMessage(role: role.asChatRole(), kind: kind.asChatKind(), isStreaming: false, turnId: turnId)
     }
 }
 
