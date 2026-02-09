@@ -6,7 +6,7 @@ struct EditorCompletionRequest: Sendable {
     let line: Int
     let column: Int
     let fileURL: URL?
-    let language: SupportedLanguage?
+    let languageName: String?
 }
 
 struct EditorEditLocation: Hashable, Sendable {

@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 final class GhostTextOverlayView: NSView {
     var ghostText: String = "" {
@@ -17,6 +18,9 @@ final class GhostTextOverlayView: NSView {
         didSet { needsDisplay = true }
     }
     var characterSpacing: CGFloat = 0 {
+        didSet { needsDisplay = true }
+    }
+    var ligaturesEnabled: Bool = true {
         didSet { needsDisplay = true }
     }
     var textColor: NSColor = .secondaryLabelColor {
@@ -85,6 +89,7 @@ final class GhostTextOverlayView: NSView {
             .foregroundColor: textColor,
             .paragraphStyle: style,
             .kern: characterSpacing,
+            .ligature: ligaturesEnabled ? 1 : 0,
         ]
 
         let storage = NSTextStorage(string: ghostText, attributes: attrs)
