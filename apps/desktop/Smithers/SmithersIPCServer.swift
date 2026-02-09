@@ -14,8 +14,8 @@ final class SmithersIPCServer {
     private let queue = DispatchQueue(label: "com.smithers.ipc")
     private var listener: NWListener?
     private weak var workspace: WorkspaceState?
-    private var openObserverID: UUID?
-    private var closeObserverID: UUID?
+    private var openObserverToken: ObserverToken?
+    private var closeObserverToken: ObserverToken?
     private var connections: [ObjectIdentifier: SmithersIPCConnection] = [:]
     private var waitRequests: [UUID: WaitRequest] = [:]
 
@@ -23,10 +23,11 @@ final class SmithersIPCServer {
         let currentID = self.workspace.map(ObjectIdentifier.init)
         let newID = workspace.map(ObjectIdentifier.init)
         if currentID != newID {
+            notifyAllWaiters(message: "Workspace changed")
             detachObservers()
         }
         self.workspace = workspace
-        if let workspace, openObserverID == nil, closeObserverID == nil {
+        if let workspace {
             attachObservers(to: workspace)
         }
         if listener == nil {
@@ -36,11 +37,14 @@ final class SmithersIPCServer {
 
     func stop() {
         notifyAllWaiters(message: "Server stopped")
+        for connection in connections.values {
+            connection.close()
+        }
+        connections.removeAll()
         detachObservers()
         workspace = nil
         listener?.cancel()
         listener = nil
-        connections.removeAll()
         waitRequests.removeAll()
         try? FileManager.default.removeItem(atPath: SmithersIPC.socketPath)
     }
@@ -53,30 +57,33 @@ final class SmithersIPCServer {
     }
 
     private func attachObservers(to workspace: WorkspaceState) {
-        openObserverID = workspace.addFileOpenObserver { [weak self] url in
-            self?.handleFileOpened(url)
+        if openObserverToken == nil {
+            openObserverToken = workspace.addFileOpenObserver { [weak self] url in
+                self?.handleFileOpened(url)
+            }
         }
-        closeObserverID = workspace.addFileCloseObserver { [weak self] url in
-            self?.handleFileClosed(url)
+        if closeObserverToken == nil {
+            closeObserverToken = workspace.addFileCloseObserver { [weak self] url in
+                self?.handleFileClosed(url)
+            }
         }
     }
 
     private func detachObservers() {
-        if let id = openObserverID, let workspace {
-            workspace.removeFileOpenObserver(id)
-        }
-        if let id = closeObserverID, let workspace {
-            workspace.removeFileCloseObserver(id)
-        }
-        openObserverID = nil
-        closeObserverID = nil
+        openObserverToken?.invalidate()
+        closeObserverToken?.invalidate()
+        openObserverToken = nil
+        closeObserverToken = nil
     }
 
     private func startListener() {
         do {
             try FileManager.default.removeItem(atPath: SmithersIPC.socketPath)
         } catch {
-            // Ignore stale socket cleanup errors.
+            let nsError = error as NSError
+            if nsError.code != NSFileNoSuchFileError {
+                WorkspaceState.debugLog("[IPC] Failed to remove socket: \(error)")
+            }
         }
 
         let parameters = NWParameters.tcp
@@ -248,6 +255,8 @@ final class SmithersIPCConnection {
     private let queue: DispatchQueue
     private var buffer = Data()
     private var didReceiveRequest = false
+    private var didClose = false
+    private let maxBufferBytes = 1_048_576
 
     var onRequest: ((Data) -> Void)?
     var onClose: (() -> Void)?
@@ -261,7 +270,7 @@ final class SmithersIPCConnection {
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed(_), .cancelled:
-                self?.onClose?()
+                self?.closeOnce()
             default:
                 break
             }
@@ -284,14 +293,22 @@ final class SmithersIPCConnection {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data {
-                buffer.append(data)
+                if !didReceiveRequest {
+                    buffer.append(data)
+                    if buffer.count > maxBufferBytes {
+                        close()
+                        closeOnce()
+                        return
+                    }
+                }
             }
-            if let line = extractLine(), !didReceiveRequest {
+            if !didReceiveRequest, let line = extractLine() {
                 didReceiveRequest = true
                 onRequest?(line)
+                buffer.removeAll(keepingCapacity: true)
             }
             if isComplete || error != nil {
-                onClose?()
+                closeOnce()
                 return
             }
             receiveNext()
@@ -303,5 +320,11 @@ final class SmithersIPCConnection {
         let line = buffer.prefix(upTo: newlineIndex)
         buffer.removeSubrange(...newlineIndex)
         return Data(line)
+    }
+
+    private func closeOnce() {
+        guard !didClose else { return }
+        didClose = true
+        onClose?()
     }
 }
