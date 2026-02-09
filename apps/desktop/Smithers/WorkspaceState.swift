@@ -682,6 +682,8 @@ class WorkspaceState: ObservableObject {
     private var fileCloseObservers: [UUID: (URL) -> Void] = [:]
     private var toastTask: Task<Void, Never>?
     private var toastToken: Int = 0
+    private var overlayTask: Task<Void, Never>?
+    private var overlayToken: Int = 0
     private var progressHideTask: Task<Void, Never>?
     private var progressHideToken: Int = 0
     private var autoSaveTask: Task<Void, Never>?
@@ -702,6 +704,7 @@ class WorkspaceState: ObservableObject {
     private static let openFileScheme = "smithers"
     private static let legacyOpenFileScheme = "smithers-open-file"
     private static let diffScheme = "smithers-diff"
+    private static let webviewScheme = "smithers-webview"
     private static let lastWorkspaceKey = "smithers.lastWorkspacePath"
     private static let sessionStateKey = "smithers.sessionStateByRoot"
     private static let recentFilesKey = "smithers.recentFiles"
