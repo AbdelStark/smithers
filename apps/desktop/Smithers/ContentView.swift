@@ -18,10 +18,13 @@ struct CodeEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var selectionRequest: EditorSelection?
     @Binding var scrollMetrics: EditorScrollMetrics
+    @Binding var fontSize: Double
     var language: SupportedLanguage?
     var fileURL: URL?
     var theme: AppTheme
     var font: NSFont
+    var minFontSize: Double
+    var maxFontSize: Double
     var saveViewState: (URL, CGPoint, NSRange) -> Void
     var loadViewState: (URL) -> EditorViewState?
     var onCursorMove: (Int, Int) -> Void
@@ -40,6 +43,7 @@ struct CodeEditor: NSViewRepresentable {
         textView.textColor = theme.foreground
         textView.delegate = context.coordinator
         let rulerView = STLineNumberRulerView(textView: textView)
+        rulerView.font = Self.lineNumberFont(for: font)
         rulerView.backgroundColor = theme.lineNumberBackground
         rulerView.textColor = theme.lineNumberForeground
         rulerView.highlightSelectedLine = true
@@ -87,6 +91,7 @@ struct CodeEditor: NSViewRepresentable {
             coord.appliedFont = font
             coord.resetHighlighterCache()
             coord.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
+            updateLineNumberFont(font, scrollView: scrollView)
             return
         }
 
