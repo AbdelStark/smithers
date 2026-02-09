@@ -185,6 +185,7 @@ class WorkspaceState: ObservableObject {
         let kind: SessionItemKind
         let path: String?
         let workingDirectory: String?
+        let chatId: String?
     }
 
     private struct SessionState: Codable {
@@ -278,9 +279,11 @@ class WorkspaceState: ObservableObject {
     @Published var diffTabs: [URL: DiffTab] = [:]
     @Published var webviewTabs: [URL: WebviewTab] = [:]
     @Published var activeOverlay: OverlayContent?
+    @Published var activeSkillModal: SkillModal?
     @Published var chatDraft: String = ""
     @Published var chatDraftImages: [ChatImage] = []
     @Published var isTurnInProgress: Bool = false
+    @Published var activeSkills: [ActiveSkill] = []
     @Published var isCommandPalettePresented: Bool = false
     @Published var isSearchPresented: Bool = false
     @Published var isShortcutsPanelVisible: Bool = false {
@@ -623,6 +626,8 @@ class WorkspaceState: ObservableObject {
     }
     @Published private(set) var fileSearchResults: [FileIndexEntry] = []
     @Published private(set) var paletteCommands: [PaletteCommand] = []
+    @Published private(set) var skillItems: [SkillItem] = []
+    @Published private(set) var skillErrors: [String] = []
     @Published private(set) var searchResults: [SearchResult] = []
     @Published var searchPreview: SearchPreview?
     @Published var isSearchInProgress: Bool = false
@@ -691,6 +696,8 @@ class WorkspaceState: ObservableObject {
     private var autoSaveTask: Task<Void, Never>?
     private var autoSaveToken: Int = 0
     private var chatHistoryPersistTask: Task<Void, Never>?
+    private var skillRefreshTask: Task<Void, Never>?
+    private var skillWatchers: [DirectoryWatcher] = []
     private var nvimSaveTask: Task<Void, Never>?
     private var nvimSettingsSyncTask: Task<Void, Never>?
     private var nvimSettingsSyncToken: Int = 0
@@ -701,7 +708,14 @@ class WorkspaceState: ObservableObject {
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
     private var suppressChatHistoryPersistence = false
-    private static let chatURL = URL(string: "smithers-chat://current")!
+    private var chatSessions: [String: ChatSessionState] = [:]
+    private var activeChatId: String = Self.mainChatId
+    private let skillScanner = SkillScanner()
+    private let skillRegistryClient = SkillRegistryClient()
+    private let skillInstaller = SkillInstaller()
+    private static let chatScheme = "smithers-chat"
+    private static let mainChatId = "main"
+    private static let chatURL = URL(string: "\(chatScheme)://\(mainChatId)")!
     private static let terminalScheme = "smithers-terminal"
     private static let openFileScheme = "smithers"
     private static let legacyOpenFileScheme = "smithers-open-file"
@@ -713,9 +727,9 @@ class WorkspaceState: ObservableObject {
     private static let recentFoldersKey = "smithers.recentFolders"
     private static let maxRecentItems = 10
     private static let maxRecentEdits = 10
-    private static let maxSearchMatches = 1000
-    private static let maxPreviewBytes = 200_000
-    private static let previewContextLines = 2
+    nonisolated private static let maxSearchMatches = 1000
+    nonisolated private static let maxPreviewBytes = 200_000
+    nonisolated private static let previewContextLines = 2
     private static let maxSessionEntries = 20
     private static let closeWarningEnabledKey = "smithers.closeWarningsEnabled"
     private static let autoSaveEnabledKey = "smithers.autoSaveEnabled"
@@ -1037,6 +1051,7 @@ class WorkspaceState: ObservableObject {
 
     private func scheduleChatHistoryPersist() {
         guard !suppressChatHistoryPersistence else { return }
+        guard activeChatId == Self.mainChatId else { return }
         guard let rootDirectory else { return }
         chatHistoryPersistTask?.cancel()
         let root = rootDirectory
@@ -1052,12 +1067,17 @@ class WorkspaceState: ObservableObject {
     private func persistChatHistoryNow() {
         chatHistoryPersistTask?.cancel()
         chatHistoryPersistTask = nil
+        guard activeChatId == Self.mainChatId else { return }
         guard let rootDirectory else { return }
         ChatHistoryStore.saveHistory(chatMessages, for: rootDirectory)
     }
 
     private func updateActiveThreadId(_ threadId: String?) {
         activeThreadId = threadId
+        if let session = chatSessions[activeChatId] {
+            session.threadId = threadId
+        }
+        guard activeChatId == Self.mainChatId else { return }
         guard let rootDirectory else { return }
         if let threadId {
             ThreadHistoryStore.saveThreadId(threadId, for: rootDirectory)
@@ -1231,7 +1251,13 @@ class WorkspaceState: ObservableObject {
         turnDiffOrder = []
         streamingTurnDiffs = [:]
         turnHistoryOrder = []
+        activeSkills = []
+        chatSessions = [:]
+        activeChatId = Self.mainChatId
         diffTabs = [:]
+        webviewTabs = [:]
+        webviewViews = [:]
+        webviewTitleObservers = [:]
         let storedThreadId = ThreadHistoryStore.loadThreadId(for: url)
         activeThreadId = storedThreadId
         if storedThreadId == nil {
@@ -1241,6 +1267,7 @@ class WorkspaceState: ObservableObject {
             chatMessages = Self.initialChatMessages()
             suppressChatHistoryPersistence = false
         }
+        storeActiveChatSessionState()
         if restoreSession {
             if !restoreSessionStateIfAvailable() {
                 openChat()
@@ -1500,7 +1527,7 @@ class WorkspaceState: ObservableObject {
         }
         if isChatURL(url) {
             isEditorLoading = false
-            openChat()
+            selectChat(url)
             return
         }
         if isTerminalURL(url) {
@@ -1636,7 +1663,11 @@ class WorkspaceState: ObservableObject {
         }
         let wasSelected = selectedFileURL == url
         openFiles.remove(at: index)
-        if isTerminalURL(url) {
+        if isChatURL(url) {
+            if let chatId = chatId(for: url) {
+                chatSessions.removeValue(forKey: chatId)
+            }
+        } else if isTerminalURL(url) {
             closeTerminal(url)
         } else if isDiffURL(url) {
             diffTabs.removeValue(forKey: url)
@@ -1683,6 +1714,13 @@ class WorkspaceState: ObservableObject {
     }
 
     private func closeDecisionForTab(_ url: URL) async -> CloseDecision {
+        if isChatURL(url) {
+            if url == selectedFileURL && isTurnInProgress {
+                showToast("Wait for the current turn to finish.")
+                return .deny
+            }
+            return .allow(force: false)
+        }
         if closeGuardsBypassed || !isCloseWarningEnabled || !isRegularFileURL(url) {
             return .allow(force: false)
         }
@@ -2212,7 +2250,7 @@ class WorkspaceState: ObservableObject {
         }
         nvimMiniStatusTask?.cancel()
         guard let timeout else { return }
-        nvimMiniStatusTask = Task { [weak self] in
+        nvimMiniStatusTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             guard let self else { return }
             if self.nvimMiniMessageState.status == text {
@@ -2249,7 +2287,7 @@ class WorkspaceState: ObservableObject {
     private func scheduleNvimMessageExpiry(id: UUID, timeout: TimeInterval?) {
         guard let timeout else { return }
         nvimMessageExpiryTasks[id]?.cancel()
-        nvimMessageExpiryTasks[id] = Task { [weak self] in
+        nvimMessageExpiryTasks[id] = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             guard let self else { return }
             if let index = self.nvimMessages.firstIndex(where: { $0.id == id }) {
@@ -2597,7 +2635,24 @@ class WorkspaceState: ObservableObject {
     }
 
     func isChatURL(_ url: URL) -> Bool {
-        url == Self.chatURL
+        url.scheme == Self.chatScheme
+    }
+
+    func isMainChatURL(_ url: URL) -> Bool {
+        chatId(for: url) == Self.mainChatId
+    }
+
+    func chatId(for url: URL) -> String? {
+        guard isChatURL(url) else { return nil }
+        if let host = url.host, !host.isEmpty {
+            return host
+        }
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return path.isEmpty ? nil : path
+    }
+
+    private static func chatURL(for id: String) -> URL {
+        URL(string: "\(chatScheme)://\(id)")!
     }
 
     func isRegularFileURL(_ url: URL) -> Bool {
@@ -2633,7 +2688,13 @@ class WorkspaceState: ObservableObject {
     }
 
     func webviewView(for url: URL) -> WKWebView? {
-        webviewViews[url]
+        if let view = webviewViews[url] {
+            return view
+        }
+        if let tab = webviewTabs[url] {
+            return ensureWebview(for: tab)
+        }
+        return nil
     }
 
     func saveAllFiles() {
@@ -3332,16 +3393,16 @@ class WorkspaceState: ObservableObject {
         var selectedIndex: Int?
         items.reserveCapacity(openFiles.count)
         for url in openFiles {
-            if isDiffURL(url) {
+            if isDiffURL(url) || isWebviewURL(url) {
                 continue
             }
             if isChatURL(url) {
-                items.append(SessionItem(kind: .chat, path: nil, workingDirectory: nil))
+                items.append(SessionItem(kind: .chat, path: nil, workingDirectory: nil, chatId: chatId(for: url)))
             } else if isTerminalURL(url) {
                 let workingDirectory = terminalViews[url]?.pwd ?? rootDirectory?.path
-                items.append(SessionItem(kind: .terminal, path: nil, workingDirectory: workingDirectory))
+                items.append(SessionItem(kind: .terminal, path: nil, workingDirectory: workingDirectory, chatId: nil))
             } else {
-                items.append(SessionItem(kind: .file, path: url.standardizedFileURL.path, workingDirectory: nil))
+                items.append(SessionItem(kind: .file, path: url.standardizedFileURL.path, workingDirectory: nil, chatId: nil))
             }
             if url == selectedFileURL {
                 selectedIndex = items.count - 1
@@ -3376,11 +3437,14 @@ class WorkspaceState: ObservableObject {
         for (index, item) in session.openItems.enumerated() {
             switch item.kind {
             case .chat:
-                if !openFiles.contains(Self.chatURL) {
-                    openFiles.append(Self.chatURL)
+                let chatId = item.chatId ?? Self.mainChatId
+                let chatURL = Self.chatURL(for: chatId)
+                _ = ensureChatSession(id: chatId)
+                if !openFiles.contains(chatURL) {
+                    openFiles.append(chatURL)
                 }
                 if session.selectedIndex == index {
-                    selectedURL = Self.chatURL
+                    selectedURL = chatURL
                 }
             case .terminal:
                 let url = URL(string: "\(Self.terminalScheme)://\(terminalCounter)")!
@@ -3410,17 +3474,13 @@ class WorkspaceState: ObservableObject {
 
         if let selectedURL {
             if isChatURL(selectedURL) {
-                selectedFileURL = selectedURL
-                currentLanguage = nil
-                setEditorText("")
+                selectChat(selectedURL)
             } else {
                 selectFile(selectedURL)
             }
         } else if let first = openFiles.first {
             if isChatURL(first) {
-                selectedFileURL = first
-                currentLanguage = nil
-                setEditorText("")
+                selectChat(first)
             } else {
                 selectFile(first)
             }
@@ -3556,7 +3616,7 @@ class WorkspaceState: ObservableObject {
 
     func displayPath(for url: URL) -> String {
         if isChatURL(url) {
-            return "Current chat"
+            return chatTitle(for: url)
         }
         if isTerminalURL(url) {
             return terminalViews[url]?.pwd ?? "Terminal"
@@ -3639,7 +3699,7 @@ class WorkspaceState: ObservableObject {
         }
 
         if isChatURL(selectedFileURL) {
-            return (title: "Chat", representedURL: nil, isEdited: false)
+            return (title: chatTitle(for: selectedFileURL), representedURL: nil, isEdited: false)
         }
         if isTerminalURL(selectedFileURL) {
             let terminalTitle = terminalViews[selectedFileURL]?.title ?? ""
@@ -3648,6 +3708,10 @@ class WorkspaceState: ObservableObject {
         }
         if isDiffURL(selectedFileURL) {
             let title = diffTabs[selectedFileURL]?.title ?? "Diff"
+            return (title: title, representedURL: nil, isEdited: false)
+        }
+        if isWebviewURL(selectedFileURL) {
+            let title = webviewTabs[selectedFileURL]?.title ?? "Webview"
             return (title: title, representedURL: nil, isEdited: false)
         }
 
@@ -3818,6 +3882,49 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    @discardableResult
+    func showOverlay(
+        type: OverlayType,
+        message: String,
+        title: String?,
+        position: OverlayPosition,
+        duration: TimeInterval?,
+        progress: Double? = nil
+    ) -> String {
+        overlayToken += 1
+        let id = UUID().uuidString
+        activeOverlay = OverlayContent(
+            id: id,
+            type: type,
+            message: message,
+            title: title,
+            position: position,
+            progress: progress,
+            dismissAfter: duration
+        )
+        overlayTask?.cancel()
+        if let duration, duration > 0 {
+            let token = overlayToken
+            overlayTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+                await MainActor.run {
+                    guard let self, token == self.overlayToken else { return }
+                    self.activeOverlay = nil
+                }
+            }
+        }
+        return id
+    }
+
+    func dismissOverlay(id: String?) {
+        guard let active = activeOverlay else { return }
+        if let id, id != active.id {
+            return
+        }
+        overlayTask?.cancel()
+        activeOverlay = nil
+    }
+
     private static func abbreviatedPath(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let prefix = home.hasSuffix("/") ? home : "\(home)/"
@@ -3951,7 +4058,7 @@ class WorkspaceState: ObservableObject {
         return nil
     }
 
-    private static func fileURL(from item: Any?) -> URL? {
+    nonisolated private static func fileURL(from item: Any?) -> URL? {
         if let url = item as? URL, url.isFileURL {
             return url
         }
@@ -3968,7 +4075,7 @@ class WorkspaceState: ObservableObject {
         return nil
     }
 
-    private static func isSupportedImageURL(_ url: URL) -> Bool {
+    nonisolated private static func isSupportedImageURL(_ url: URL) -> Bool {
         guard url.isFileURL else { return false }
         guard !url.pathExtension.isEmpty else { return false }
         let ext = url.pathExtension.lowercased()
@@ -3987,13 +4094,14 @@ class WorkspaceState: ObservableObject {
             return
         }
         let root = rootDirectory
+        let targetChatId = activeChatId
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let threadId = try await codexService.startNewThread(cwd: root.path)
                 self.resetChatForNewThread()
-                self.openChat()
                 self.updateActiveThreadId(threadId)
+                self.openChat(id: targetChatId, title: self.chatSessions[targetChatId]?.title, select: true)
             } catch {
                 self.appendErrorMessage("Failed to start new chat: \(error.localizedDescription)")
             }
@@ -4014,6 +4122,7 @@ class WorkspaceState: ObservableObject {
         turnDiffOrder = []
         streamingTurnDiffs = [:]
         turnHistoryOrder = []
+        storeActiveChatSessionState()
     }
 
     func canCopyMessage(_ message: ChatMessage) -> Bool {
@@ -4098,13 +4207,13 @@ class WorkspaceState: ObservableObject {
                 if success {
                     self.chatDraft = text
                     self.chatDraftImages = message.images
-                    self.openChat()
+                    self.openChat(id: self.activeChatId, title: self.chatSessions[self.activeChatId]?.title, select: true)
                 }
             }
         } else {
             chatDraft = text
             chatDraftImages = message.images
-            openChat()
+            openChat(id: activeChatId, title: chatSessions[activeChatId]?.title, select: true)
         }
     }
 
@@ -4181,7 +4290,7 @@ class WorkspaceState: ObservableObject {
             }
             applyThreadHistory(finalThread)
             updateActiveThreadId(finalThread.id)
-            openChat()
+            openChat(id: activeChatId, title: chatSessions[activeChatId]?.title, select: true)
             if numTurnsToDrop > 0 {
                 showToast("Forked chat history. File changes were not reverted.")
             } else {
@@ -5098,7 +5207,7 @@ class WorkspaceState: ObservableObject {
 
         return await withTaskCancellationHandler(operation: {
             let errorTask = Task<Data, Never> {
-                (try? await errorPipe.fileHandleForReading.readToEnd()) ?? Data()
+                (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
             }
 
             var results: [SearchResult] = []
@@ -5164,7 +5273,7 @@ class WorkspaceState: ObservableObject {
             }
 
             if hitLimit {
-                _ = try? await handle.readToEnd()
+                _ = try? handle.readToEnd()
             }
 
             let errorData = await errorTask.value
@@ -5254,6 +5363,7 @@ class WorkspaceState: ObservableObject {
     private func startCodexService(cwd: String, resumeThreadId: String?) {
         stopCodexService()
         let service = CodexService()
+        service.attachWorkspace(self)
         codexService = service
 
         codexEventsTask = Task { [weak self] in
@@ -5538,6 +5648,83 @@ class WorkspaceState: ObservableObject {
         setEditorText("")
     }
 
+    @discardableResult
+    func openWebview(url: URL, title: String?) -> URL {
+        let id = UUID().uuidString
+        guard let tabURL = URL(string: "\(Self.webviewScheme)://\(id)") else { return url }
+        let tabTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = tabTitle?.isEmpty == false
+            ? tabTitle!
+            : (url.host ?? url.absoluteString)
+        let tab = WebviewTab(id: tabURL, title: resolvedTitle, url: url)
+        webviewTabs[tabURL] = tab
+        _ = ensureWebview(for: tab)
+        if !openFiles.contains(tabURL) {
+            openFiles.append(tabURL)
+        }
+        selectedFileURL = tabURL
+        currentLanguage = nil
+        setEditorText("")
+        return tabURL
+    }
+
+    func closeWebview(_ url: URL) {
+        if let view = webviewViews[url] {
+            view.navigationDelegate = nil
+            view.uiDelegate = nil
+            view.stopLoading()
+        }
+        webviewViews.removeValue(forKey: url)
+        webviewTitleObservers.removeValue(forKey: url)
+        webviewTabs.removeValue(forKey: url)
+    }
+
+    func currentWebviewURL(tabId: URL) -> URL? {
+        if let view = webviewViews[tabId], let url = view.url {
+            return url
+        }
+        return webviewTabs[tabId]?.url
+    }
+
+    func evaluateWebviewJavaScript(_ script: String, tabId: URL) async -> Result<String, String> {
+        guard let webView = webviewView(for: tabId) else {
+            return .failure("webview not found")
+        }
+        return await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript(script) { result, error in
+                if let error {
+                    continuation.resume(returning: .failure(error.localizedDescription))
+                    return
+                }
+                if let result {
+                    continuation.resume(returning: .success(String(describing: result)))
+                } else {
+                    continuation.resume(returning: .success("")) 
+                }
+            }
+        }
+    }
+
+    private func ensureWebview(for tab: WebviewTab) -> WKWebView {
+        if let existing = webviewViews[tab.id] {
+            return existing
+        }
+        let view = WKWebView()
+        view.load(URLRequest(url: tab.url))
+        let observation = view.observe(\.title, options: [.new]) { [weak self] webView, change in
+            guard let self else { return }
+            let nextTitle = change.newValue ?? webView.title
+            guard let title = nextTitle, !title.isEmpty else { return }
+            if var existingTab = self.webviewTabs[tab.id] {
+                existingTab.title = title
+                self.webviewTabs[tab.id] = existingTab
+            }
+        }
+        webviewViews[tab.id] = view
+        webviewTitleObservers[tab.id] = observation
+        return view
+    }
+
     private func looksLikeUnifiedDiff(_ text: String) -> Bool {
         if text.contains("diff --git ") || text.contains("\n+++ ") || text.contains("\n--- ") {
             return true
@@ -5548,13 +5735,116 @@ class WorkspaceState: ObservableObject {
         return false
     }
 
-    private func openChat() {
-        if !openFiles.contains(Self.chatURL) {
-            openFiles.insert(Self.chatURL, at: 0)
+    private func ensureChatSession(id: String, title: String? = nil) -> ChatSessionState {
+        if let existing = chatSessions[id] {
+            return existing
         }
-        selectedFileURL = Self.chatURL
+        let sessionTitle = title ?? (id == Self.mainChatId ? "Chat" : "Skill")
+        let session = ChatSessionState(
+            id: id,
+            title: sessionTitle,
+            messages: Self.initialChatMessages()
+        )
+        chatSessions[id] = session
+        return session
+    }
+
+    private func storeActiveChatSessionState() {
+        let session = ensureChatSession(id: activeChatId)
+        session.messages = chatMessages
+        session.draft = chatDraft
+        session.draftImages = chatDraftImages
+        session.isTurnInProgress = isTurnInProgress
+        session.activeDiffPreview = activeDiffPreview
+        session.activeSessionDiff = activeSessionDiff
+        session.activeSkills = activeSkills
+        session.sessionDiffSnapshot = sessionDiffSnapshot
+        session.turnDiffs = turnDiffs
+        session.turnDiffOrder = turnDiffOrder
+        session.streamingTurnDiffs = streamingTurnDiffs
+        session.turnHistoryOrder = turnHistoryOrder
+        session.threadId = activeThreadId
+    }
+
+    private func loadChatSessionState(_ session: ChatSessionState) {
+        let wasSuppressed = suppressChatHistoryPersistence
+        suppressChatHistoryPersistence = true
+        chatMessages = session.messages
+        suppressChatHistoryPersistence = wasSuppressed
+        chatDraft = session.draft
+        chatDraftImages = session.draftImages
+        isTurnInProgress = session.isTurnInProgress
+        activeDiffPreview = session.activeDiffPreview
+        activeSessionDiff = session.activeSessionDiff
+        activeSkills = session.activeSkills
+        sessionDiffSnapshot = session.sessionDiffSnapshot
+        turnDiffs = session.turnDiffs
+        turnDiffOrder = session.turnDiffOrder
+        streamingTurnDiffs = session.streamingTurnDiffs
+        turnHistoryOrder = session.turnHistoryOrder
+        activeThreadId = session.threadId
+    }
+
+    private func resumeChatSessionThread(_ session: ChatSessionState) {
+        guard let rootDirectory else { return }
+        guard let threadId = session.threadId else { return }
+        guard let codexService else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await codexService.resumeThread(threadId: threadId, cwd: rootDirectory.path)
+                await MainActor.run {
+                    self.updateActiveThreadId(threadId)
+                }
+            } catch {
+                await MainActor.run {
+                    self.appendErrorMessage("Failed to resume chat: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func selectChat(_ url: URL) {
+        guard let chatId = chatId(for: url) else { return }
+        if chatId != activeChatId {
+            guard !isTurnInProgress else {
+                showToast("Wait for the current turn to finish.")
+                return
+            }
+            storeActiveChatSessionState()
+            activeChatId = chatId
+            let session = ensureChatSession(id: chatId)
+            loadChatSessionState(session)
+            resumeChatSessionThread(session)
+        }
+        selectedFileURL = url
         currentLanguage = nil
+        isEditorLoading = false
         setEditorText("")
+    }
+
+    private func openChat(id: String = Self.mainChatId, title: String? = nil, select: Bool = true) {
+        let url = Self.chatURL(for: id)
+        _ = ensureChatSession(id: id, title: title)
+        if !openFiles.contains(url) {
+            openFiles.insert(url, at: 0)
+        }
+        if select {
+            selectChat(url)
+        }
+    }
+
+    func chatTitle(for url: URL) -> String {
+        guard let chatId = chatId(for: url) else { return "Chat" }
+        return chatSessions[chatId]?.title ?? (chatId == Self.mainChatId ? "Chat" : "Skill")
+    }
+
+    func chatSubtitle(for url: URL) -> String {
+        guard let chatId = chatId(for: url) else { return "Chat" }
+        if chatId == Self.mainChatId {
+            return "Main chat"
+        }
+        return "Skill tab"
     }
 
     private func closeTerminal(_ url: URL) {
@@ -5693,6 +5983,218 @@ Recent edits:
             }
         }
         return text
+    }
+
+    // MARK: - Skills
+
+    func refreshSkills(force: Bool = false) {
+        skillRefreshTask?.cancel()
+        let root = rootDirectory
+        let scanner = skillScanner
+        skillRefreshTask = Task.detached { [weak self] in
+            guard let self else { return }
+            let output = await scanner.scan(rootDirectory: root)
+            await MainActor.run {
+                self.skillItems = output.skills
+                self.skillErrors = output.errors
+                if force {
+                    self.updateSkillWatchers(rootDirectory: root)
+                }
+            }
+        }
+    }
+
+    func searchRegistry(query: String) async throws -> [SkillRegistryEntry] {
+        try await skillRegistryClient.search(query: query)
+    }
+
+    func fetchRegistryMarkdown(_ entry: SkillRegistryEntry) async -> String? {
+        await skillRegistryClient.fetchSkillMarkdown(source: entry.source, skillId: entry.skillId)
+    }
+
+    func installRegistrySkill(_ entry: SkillRegistryEntry, scope: SkillScope) {
+        installSkill(
+            source: .registry(entry: entry),
+            scope: scope,
+            title: "Install \(entry.skillId)"
+        )
+    }
+
+    func installSkill(from input: String, scope: SkillScope) {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let (source, skillName) = parseSkillSpecifier(trimmed)
+        let sourceType = resolveSkillInstallSource(source: source, skillName: skillName)
+        installSkill(source: sourceType, scope: scope, title: "Install Skill")
+    }
+
+    func openSkillDetail(_ skill: SkillItem) {
+        let skillFile = skill.path.appendingPathComponent("SKILL.md")
+        selectFile(skillFile)
+    }
+
+    func updateSkill(_ skill: SkillItem) {
+        guard let source = skill.source, !source.isEmpty else {
+            showToast("No update source")
+            return
+        }
+        let suffix = source.contains("@") ? "" : "@\(skill.path.lastPathComponent)"
+        installSkill(from: source + suffix, scope: skill.scope)
+    }
+
+    func removeSkill(_ skill: SkillItem) {
+        do {
+            try FileManager.default.removeItem(at: skill.path)
+            SkillInstallStore.shared.remove(path: skill.path)
+            showToast("Removed \(skill.name)")
+            refreshSkills(force: true)
+        } catch {
+            appendErrorMessage("Failed to remove skill: \(error.localizedDescription)")
+            showToast("Remove failed")
+        }
+    }
+
+    func moveSkill(_ skill: SkillItem, to scope: SkillScope) {
+        guard let destinationBase = skillScopeDirectory(scope: scope) else {
+            showToast("No project workspace")
+            return
+        }
+        let destination = destinationBase.appendingPathComponent(skill.path.lastPathComponent, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: destinationBase, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                appendErrorMessage("Destination already exists: \(destination.path)")
+                showToast("Move failed")
+                return
+            }
+            try FileManager.default.moveItem(at: skill.path, to: destination)
+            if let record = SkillInstallStore.shared.record(for: skill.path) {
+                SkillInstallStore.shared.remove(path: skill.path)
+                let updated = SkillInstallRecord(
+                    path: destination.standardizedFileURL.path,
+                    source: record.source,
+                    installedAt: record.installedAt,
+                    lastUpdatedAt: record.lastUpdatedAt
+                )
+                SkillInstallStore.shared.upsert(record: updated)
+            }
+            showToast("Moved \(skill.name)")
+            refreshSkills(force: true)
+        } catch {
+            appendErrorMessage("Failed to move skill: \(error.localizedDescription)")
+            showToast("Move failed")
+        }
+    }
+
+    func isSkillActive(_ skill: SkillItem) -> Bool {
+        activeSkills.contains { $0.skill.id == skill.id }
+    }
+
+    func activateSkillInline(_ skill: SkillItem) {
+        activateSkill(skill, mode: .inline)
+    }
+
+    func activateSkillInNewTab(_ skill: SkillItem) {
+        let threadId = activeThreadId ?? UUID().uuidString
+        activateSkill(skill, mode: .tab(threadId: threadId))
+    }
+
+    private func activateSkill(_ skill: SkillItem, mode: SkillActivationMode) {
+        if activeSkills.contains(where: { $0.skill.id == skill.id && $0.mode == mode }) {
+            showToast("\(skill.name) already active")
+            return
+        }
+        let entry = ActiveSkill(
+            id: UUID().uuidString,
+            skill: skill,
+            activatedAt: Date(),
+            mode: mode,
+            arguments: nil
+        )
+        activeSkills.append(entry)
+        showToast("Activated \(skill.name)")
+    }
+
+    private func installSkill(
+        source: SkillInstallSource,
+        scope: SkillScope,
+        title: String
+    ) {
+        let root = rootDirectory
+        showToast(title)
+        Task.detached { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try self.skillInstaller.install(
+                    source: source,
+                    scope: scope,
+                    rootDirectory: root,
+                    confirmScripts: nil
+                )
+                await MainActor.run {
+                    self.showToast("Skill installed")
+                    self.refreshSkills(force: true)
+                }
+            } catch {
+                await MainActor.run {
+                    self.appendErrorMessage("Skill install failed: \(error.localizedDescription)")
+                    self.showToast("Install failed")
+                }
+            }
+        }
+    }
+
+    private func parseSkillSpecifier(_ input: String) -> (String, String?) {
+        let parts = input.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+        if parts.count == 2 {
+            let source = String(parts[0])
+            let name = parts[1].isEmpty ? nil : String(parts[1])
+            return (source, name)
+        }
+        return (input, nil)
+    }
+
+    private func resolveSkillInstallSource(source: String, skillName: String?) -> SkillInstallSource {
+        let expanded = (source as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        if fm.fileExists(atPath: expanded) {
+            return .local(path: expanded, skillName: skillName)
+        }
+        if source.hasPrefix("http") || source.hasPrefix("git@") {
+            return .git(url: source, skillName: skillName)
+        }
+        if source.contains("/") {
+            return .git(url: source, skillName: skillName)
+        }
+        return .local(path: expanded, skillName: skillName)
+    }
+
+    private func skillScopeDirectory(scope: SkillScope) -> URL? {
+        let fm = FileManager.default
+        switch scope {
+        case .project:
+            guard let rootDirectory else { return nil }
+            return rootDirectory.appendingPathComponent(".agents/skills", isDirectory: true)
+        case .user:
+            return fm.homeDirectoryForCurrentUser.appendingPathComponent(".agents/skills", isDirectory: true)
+        case .admin:
+            return URL(fileURLWithPath: "/etc/codex/skills", isDirectory: true)
+        case .system:
+            return nil
+        }
+    }
+
+    private func updateSkillWatchers(rootDirectory: URL?) {
+        skillWatchers.forEach { $0.stop() }
+        skillWatchers = []
+        let directories = skillScanner.skillDirectories(rootDirectory: rootDirectory)
+        for entry in directories {
+            if let watcher = DirectoryWatcher(url: entry.url, onChange: { [weak self] in
+                self?.refreshSkills()
+            }) {
+                skillWatchers.append(watcher)
+            }
+        }
     }
 
     private func resolveFileURL(path: String) -> URL? {
