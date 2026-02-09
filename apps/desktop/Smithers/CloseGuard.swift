@@ -46,11 +46,13 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
 final class SmithersAppDelegate: NSObject, NSApplicationDelegate {
     weak var workspace: WorkspaceState? {
         didSet {
+            ipcServer.configure(workspace: workspace)
             flushPendingOpenRequests()
         }
     }
     private var terminationInProgress = false
     private var pendingOpenURLs: [URL] = []
+    private let ipcServer = SmithersIPCServer()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         PressAndHoldDisabler.disable()
@@ -81,6 +83,7 @@ final class SmithersAppDelegate: NSObject, NSApplicationDelegate {
             if shouldTerminate {
                 workspace.persistSessionState()
                 workspace.setCloseGuardsBypassed(true)
+                ipcServer.notifyAllWaiters(message: "Application terminating")
             }
             self.terminationInProgress = false
             NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
