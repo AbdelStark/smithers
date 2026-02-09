@@ -7,11 +7,13 @@ import type {
   FrameSnapshotDTO,
   SmithersEventDTO,
   WorkspaceStateDTO,
+  WorkspaceStatusDTO,
 } from "@smithers/shared";
 import { AppDb } from "./db";
 import { AgentService } from "./agent/AgentService";
 import { SmithersService } from "./smithers/SmithersService";
 import { WorkspaceService } from "./workspace/WorkspaceService";
+import { ForkService } from "./workspace/ForkService";
 import { PluginRegistry } from "./plugins/registry";
 import { createSmithersPlugin } from "./plugins/smithersPlugin";
 import { SecretStore } from "./secrets";
@@ -23,7 +25,9 @@ export type RpcSend = {
   workflowEvent: (payload: SmithersEventDTO & { seq: number }) => void;
   workflowFrame: (payload: FrameSnapshotDTO) => void;
   workspaceState: (payload: WorkspaceStateDTO) => void;
+  workspaceStatus: (payload: WorkspaceStatusDTO) => void;
   toast: (payload: { level: "info" | "warning" | "error"; message: string }) => void;
+  mergeProgress: (payload: { mergeId: string; status: string; conflicts?: string[] }) => void;
 };
 
 export type RpcRequestHandlers = {
@@ -45,7 +49,9 @@ const noopSend: RpcSend = {
   workflowEvent: () => {},
   workflowFrame: () => {},
   workspaceState: () => {},
+  workspaceStatus: () => {},
   toast: () => {},
+  mergeProgress: () => {},
 };
 
 export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: string } = {}): AppRuntime {
@@ -70,7 +76,9 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
     workflowEvent: (payload) => buffer("workflowEvent", payload),
     workflowFrame: (payload) => buffer("workflowFrame", payload),
     workspaceState: (payload) => buffer("workspaceState", payload),
+    workspaceStatus: (payload) => buffer("workspaceStatus", payload),
     toast: (payload) => buffer("toast", payload),
+    mergeProgress: (payload) => buffer("mergeProgress", payload),
   };
 
   const sendRef: { current: RpcSend } = { current: bufferingSend };
@@ -78,6 +86,8 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
   let agentService: AgentService;
   let smithersService: SmithersService;
   let workspaceService: WorkspaceService;
+  let forkService: ForkService;
+  let workspaceDirtyHandler: (() => void) | undefined;
   const plugins = new PluginRegistry();
   const toolRegistry: CustomToolRegistry = new Map();
 
@@ -115,6 +125,7 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
     emit: (event) => {
       sendRef.current.agentEvent(event);
     },
+    onWorkspaceDirty: () => workspaceDirtyHandler?.(),
     secretStore,
     toolRegistry,
     smithers: {
@@ -123,6 +134,21 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
     listWorkflows: () => workspaceService.listWorkflows(),
     listRuns: (status) => Promise.resolve(smithersService.listRuns(status as any)),
   });
+
+  forkService = new ForkService({
+    db,
+    workspace: workspaceService,
+    agent: agentService,
+    smithers: smithersService,
+    emitStatus: (status) => {
+      sendRef.current.workspaceStatus(status);
+    },
+    emitMergeProgress: (payload) => {
+      sendRef.current.mergeProgress(payload);
+    },
+  });
+
+  workspaceDirtyHandler = () => forkService.markDirty();
 
   plugins.register(
     createSmithersPlugin({
@@ -147,11 +173,13 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
       agentService.setWorkspaceRoot(root ?? process.cwd());
       smithersService.setWorkspaceRoot(root ?? process.cwd());
       db.setSettings({ ui: { lastWorkspaceRoot: root ?? null } });
+      forkService.resetStatus(root ?? null);
       return { ok: true };
     },
     getWorkspaceState: () => workspaceService.getState(),
     getSettings: () => db.getSettings(),
     setSettings: ({ patch }) => db.setSettings(patch),
+    getWorkspaceStatus: () => forkService.getStatus(),
     getSecretStatus: () => ({
       openai: secretStore.has("openai.apiKey") || Boolean(process.env.OPENAI_API_KEY),
       anthropic: secretStore.has("anthropic.apiKey") || Boolean(process.env.ANTHROPIC_API_KEY),
@@ -174,6 +202,23 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
       }
       return session;
     },
+    getSessionFork: ({ sessionId }) => ({ fork: forkService.getForkForSession(sessionId) }),
+    listForks: ({ sessionId }) => ({ forks: forkService.listForks(sessionId) }),
+    forkChat: async ({ sessionId, messageSeq, forkPoint, includeCode, codeMode, fanout, snapshotStrategy }) =>
+      forkService.forkChat({
+        sessionId,
+        messageSeq,
+        forkPoint,
+        includeCode,
+        codeMode,
+        fanout,
+        snapshotStrategy,
+      }),
+    activateCodeState: ({ sessionId, force }) => forkService.activateCodeState({ sessionId, force }),
+    previewForkMerge: ({ forkId, targetSessionId }) =>
+      forkService.previewForkMerge({ forkId, targetSessionId }).then((changes) => ({ changes })),
+    mergeFork: ({ forkId, targetSessionId, mode, files }) =>
+      forkService.mergeFork({ forkId, targetSessionId, mode, files }),
     sendChatMessage: async ({ sessionId, text, attachments }) => {
       const runId = await agentService.sendChatMessage({
         sessionId,
@@ -232,10 +277,12 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
           }
         }
       }
+      sendRef.current.workspaceStatus(forkService.getStatus());
     },
     emitWorkspaceState: async () => {
       const state = await workspaceService.getState();
       sendRef.current.workspaceState(state);
+      sendRef.current.workspaceStatus(forkService.getStatus());
     },
     shutdown: () => {
       agentService.abortAllRuns();
