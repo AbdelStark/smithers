@@ -18,8 +18,8 @@ struct SmithersApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(workspace: workspace, tmuxKeyHandler: tmuxKeyHandler)
-                .preferredColorScheme(workspace.theme.colorScheme)
-                .tint(workspace.theme.accentColor)
+                .preferredColorScheme(workspace.preferences.theme.colorScheme)
+                .tint(workspace.preferences.theme.accentColor)
                 .frame(minWidth: 700, minHeight: 400)
                 .environment(\.openURL, OpenURLAction { url in
                     workspace.handleOpenURL(url) ? .handled : .systemAction

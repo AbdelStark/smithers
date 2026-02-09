@@ -12,7 +12,7 @@ struct SkillBrowserView: View {
     @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             header(theme: theme)
             Divider()
@@ -131,11 +131,11 @@ struct SkillBrowserView: View {
             .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(nsColor: workspace.theme.panelBackground))
+                    .fill(Color(nsColor: workspace.preferences.theme.panelBackground))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(workspace.theme.panelBorderColor)
+                    .strokeBorder(workspace.preferences.theme.panelBorderColor)
             )
         }
         .buttonStyle(.plain)

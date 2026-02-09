@@ -10,7 +10,7 @@ struct NvimExtUIOverlay: View {
                     NvimMessagesOverlayView(
                         messages: workspace.nvimMessages,
                         miniState: workspace.nvimMiniMessageState,
-                        theme: workspace.theme,
+                        theme: workspace.preferences.theme,
                         cellSize: layout.cellSize,
                         gridSize: layout.gridSize
                     )
@@ -22,7 +22,7 @@ struct NvimExtUIOverlay: View {
                             HStack {
                                 NvimCmdlineView(
                                     state: workspace.nvimCmdlineState,
-                                    theme: workspace.theme,
+                                    theme: workspace.preferences.theme,
                                     cellSize: layout.cellSize
                                 )
                                 Spacer()
@@ -37,7 +37,7 @@ struct NvimExtUIOverlay: View {
                     if workspace.nvimPopupMenuState.isVisible, !workspace.nvimPopupMenuState.items.isEmpty {
                         NvimPopupMenuView(
                             state: workspace.nvimPopupMenuState,
-                            theme: workspace.theme,
+                            theme: workspace.preferences.theme,
                             cellSize: layout.cellSize,
                             gridSize: layout.gridSize,
                             cmdlineHeight: cmdlineHeight(cellHeight: layout.cellSize.height)

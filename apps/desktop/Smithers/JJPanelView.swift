@@ -6,7 +6,7 @@ struct JJPanelView: View {
     @ObservedObject var workspace: WorkspaceState
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             panelHeader(theme: theme)
             Divider().background(theme.dividerColor)
@@ -531,7 +531,7 @@ struct JJSnapshotBrowserView: View {
     @ObservedObject var workspace: WorkspaceState
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "clock.arrow.circlepath")

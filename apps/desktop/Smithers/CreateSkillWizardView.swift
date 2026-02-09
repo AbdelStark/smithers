@@ -14,7 +14,7 @@ struct CreateSkillWizardView: View {
     @State private var includeScripts: Bool = false
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             header(theme: theme)
             Divider()

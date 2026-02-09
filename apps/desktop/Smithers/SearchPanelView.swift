@@ -11,7 +11,7 @@ struct SearchPanelView: View {
     }
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             header
             Divider()
@@ -63,7 +63,7 @@ struct SearchPanelView: View {
         } else if workspace.searchResults.isEmpty {
             emptyResultsView
         } else {
-            searchResultsView(theme: workspace.theme)
+            searchResultsView(theme: workspace.preferences.theme)
         }
     }
 
@@ -250,11 +250,11 @@ struct SearchPanelOverlay: View {
                     }
                 SearchPanelView(workspace: workspace)
                     .frame(width: width, height: height)
-                    .background(workspace.theme.panelBackgroundColor)
+                    .background(workspace.preferences.theme.panelBackgroundColor)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(workspace.theme.panelBorderColor)
+                            .strokeBorder(workspace.preferences.theme.panelBorderColor)
                     )
                     .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
                     .padding(.leading, 20)

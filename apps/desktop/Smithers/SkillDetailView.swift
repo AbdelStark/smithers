@@ -8,7 +8,7 @@ struct SkillDetailView: View {
     @State private var isLoading = false
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             header(theme: theme)
             Divider()

@@ -408,7 +408,7 @@ struct ChatView: View {
     @State private var isDropTargeted = false
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             chatMessagesSection(theme: theme)
 
@@ -430,7 +430,7 @@ struct ChatView: View {
                 title: preview.title,
                 summary: preview.summary,
                 diff: preview.diff,
-                theme: workspace.theme,
+                theme: workspace.preferences.theme,
                 onOpenInTab: {
                     workspace.openDiffTab(title: preview.title, summary: preview.summary, diff: preview.diff)
                     workspace.activeDiffPreview = nil
@@ -442,7 +442,7 @@ struct ChatView: View {
                 title: snapshot.title,
                 summary: snapshot.summary,
                 diff: snapshot.diff,
-                theme: workspace.theme,
+                theme: workspace.preferences.theme,
                 onOpenInTab: {
                     workspace.openDiffTab(title: snapshot.title, summary: snapshot.summary, diff: snapshot.diff)
                     workspace.activeSessionDiff = nil
@@ -664,7 +664,7 @@ struct ChatBubble: View {
     }
 
     private var bubbleColor: Color {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         switch message.kind {
         case .command:
             return theme.chatCommandBubbleColor
@@ -685,7 +685,7 @@ struct ChatBubble: View {
     }
 
     private var roleBadge: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         let icon = message.role == .assistant ? "sparkles" : "person.fill"
         let tint = message.role == .assistant
             ? theme.accentColor
@@ -724,7 +724,7 @@ struct ChatBubble: View {
                     ChatImageStrip(
                         images: message.images,
                         maxHeight: 140,
-                        theme: workspace.theme,
+                        theme: workspace.preferences.theme,
                         showsBorder: message.role == .user,
                         onSelect: onSelectImage
                     )
@@ -879,6 +879,7 @@ struct ChatImageOverlay: View {
 struct MessageActionBar: View {
     let message: ChatMessage
     let workspace: WorkspaceState
+    @State private var showJJRevertConfirm = false
 
     var body: some View {
         let canFork = workspace.canForkMessage(message)
@@ -886,7 +887,8 @@ struct MessageActionBar: View {
         let canRetry = workspace.canRetryMessage(message)
         let canEdit = workspace.canEditMessage(message)
         let canRollback = workspace.canRollbackToMessage(message)
-        let canRevertJJ = workspace.canRevertJJMessage(message)
+        let revertInfo = workspace.jjRevertActionInfo(message)
+        let canRevertJJ = revertInfo != nil
         let hasAny = canFork || canCopy || canRetry || canEdit || canRollback || canRevertJJ
 
         return Group {
@@ -897,7 +899,7 @@ struct MessageActionBar: View {
                     canRetry: canRetry,
                     canEdit: canEdit,
                     canRollback: canRollback,
-                    canRevertJJ: canRevertJJ
+                    revertInfo: revertInfo
                 )
             }
         }
@@ -910,18 +912,35 @@ struct MessageActionBar: View {
         canRetry: Bool,
         canEdit: Bool,
         canRollback: Bool,
-        canRevertJJ: Bool = false
+        revertInfo: WorkspaceState.JJRevertActionInfo?
     ) -> some View {
         HStack(spacing: 6) {
-            if canRevertJJ {
+            if let revertInfo {
                 Button {
-                    Task { await workspace.revertJJMessage(message) }
+                    if revertInfo.isLatest {
+                        Task { await workspace.revertJJSnapshot(revertInfo.snapshot, isLatest: true) }
+                    } else {
+                        showJJRevertConfirm = true
+                    }
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: Typography.xs, weight: .semibold))
                 }
                 .buttonStyle(.plain)
-                .help("Revert file changes (jj)")
+                .accessibilityLabel(revertInfo.isLatest ? "Revert" : "Revert to here...")
+                .help(revertInfo.isLatest ? "Revert" : "Revert to here...")
+                .confirmationDialog(
+                    "Revert to this snapshot?",
+                    isPresented: $showJJRevertConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("Revert to here", role: .destructive) {
+                        Task { await workspace.revertJJSnapshot(revertInfo.snapshot, isLatest: false) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This will discard all changes made after this message.")
+                }
             }
 
             if canFork {

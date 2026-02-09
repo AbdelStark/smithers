@@ -53,7 +53,7 @@ private struct CommandPalettePanel: View {
     @State private var previewTask: Task<Void, Never>?
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         let targetWidth = min(680, max(420, containerSize.width * 0.65))
         let targetHeight = min(460, max(320, containerSize.height * 0.55))
         let content = VStack(spacing: 0) {
@@ -166,7 +166,7 @@ private struct CommandPalettePanel: View {
 
     @ViewBuilder
     private var commandContent: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         if workspace.paletteCommands.isEmpty {
             VStack(spacing: 8) {
                 Image(systemName: "command")
@@ -213,7 +213,7 @@ private struct CommandPalettePanel: View {
 
     @ViewBuilder
     private var fileContent: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         let showRecents = shouldShowRecents
         let recentEdits = workspace.recentEditEntries
         let recentFiles = workspace.recentFileEntries
@@ -415,7 +415,7 @@ private struct CommandPalettePanel: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(workspace.theme.panelBackgroundColor)
+        .background(workspace.preferences.theme.panelBackgroundColor)
     }
 
     private func highlightedText(_ text: String, query: String, accent: Color) -> Text {
@@ -514,6 +514,7 @@ private struct CommandPalettePanel: View {
         workspace.hideCommandPalette()
     }
 
+    @MainActor
     private func run(_ command: PaletteCommand) {
         command.action()
         workspace.hideCommandPalette()

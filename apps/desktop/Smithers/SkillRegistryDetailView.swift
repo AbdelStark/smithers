@@ -9,7 +9,7 @@ struct SkillRegistryDetailView: View {
     @State private var fileTree: [String] = []
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             header(theme: theme)
             Divider()

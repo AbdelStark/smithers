@@ -107,6 +107,8 @@
 		E6DE57D1991DDFDA11E56E27 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E3D84544EAEC72C20ACBBF32 /* Carbon.framework */; };
 		E7ED9069A3F10941790EDDEA /* NvimViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D401C549042E7BC3F220ECE /* NvimViewport.swift */; };
 		E8382060AF6061C4804B9F70 /* GhostTextOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 003BFFD4C7E965692D646D68 /* GhostTextOverlayView.swift */; };
+		13BA97AEC585558C68FB5897 /* EditorPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43D177668808BB7F19FCA142 /* EditorPreferences.swift */; };
+		EC3734C566979D841C0D26BA /* WorkspaceState+Preferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAC305C70A1564F2110D1B2 /* WorkspaceState+Preferences.swift */; };
 		E961693CD21DFE7F4E5350E1 /* WorkspaceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E71D95313FFB398DA0EB4A5 /* WorkspaceState.swift */; };
 		E9B7B2BEFF0E7442B8B8D7E3 /* SmoothScrollController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60F2B640544C2C14C6FE0280 /* SmoothScrollController.swift */; };
 		EBD5AF0A2D7E3CDC0F10DB6D /* TmuxKeyHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28E4708D9C09F3165A80FF50 /* TmuxKeyHandler.swift */; };
@@ -174,6 +176,8 @@
 		7AD03EEB5B7B257352E09787 /* NvimFloatingWindowEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NvimFloatingWindowEffects.swift; sourceTree = "<group>"; };
 		7BD2F7891D8573E62DEA8E93 /* JJSnapshotStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JJSnapshotStoreTests.swift; sourceTree = "<group>"; };
 		7DDDADC032B1DB0125D13397 /* JJServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JJServiceTests.swift; sourceTree = "<group>"; };
+		43D177668808BB7F19FCA142 /* EditorPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorPreferences.swift; sourceTree = "<group>"; };
+		3FAC305C70A1564F2110D1B2 /* WorkspaceState+Preferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WorkspaceState+Preferences.swift"; sourceTree = "<group>"; };
 		7E71D95313FFB398DA0EB4A5 /* WorkspaceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceState.swift; sourceTree = "<group>"; };
 		7FB7C6C475FF352702BF698A /* SmithersCtlInterpreter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmithersCtlInterpreter.swift; sourceTree = "<group>"; };
 		81CE975B8840519D0F650B84 /* ChatHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistoryStore.swift; sourceTree = "<group>"; };
@@ -341,6 +345,8 @@
 				6B55327F20EDBC4AB34970BA /* WebviewTabView.swift */,
 				F5D1347D6E1E878718A00708 /* WindowFrameStore.swift */,
 				553C681E49087AF57C786F39 /* WorkspaceOverlayView.swift */,
+				43D177668808BB7F19FCA142 /* EditorPreferences.swift */,
+				3FAC305C70A1564F2110D1B2 /* WorkspaceState+Preferences.swift */,
 				7E71D95313FFB398DA0EB4A5 /* WorkspaceState.swift */,
 			);
 			path = Smithers;
@@ -659,6 +665,8 @@
 				A6D6376CC374174DE7F74669 /* WebviewTabView.swift in Sources */,
 				2580765144D9171D7AF0CB37 /* WindowFrameStore.swift in Sources */,
 				624D13626F0937947CBDFE41 /* WorkspaceOverlayView.swift in Sources */,
+				13BA97AEC585558C68FB5897 /* EditorPreferences.swift in Sources */,
+				EC3734C566979D841C0D26BA /* WorkspaceState+Preferences.swift in Sources */,
 				E961693CD21DFE7F4E5350E1 /* WorkspaceState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

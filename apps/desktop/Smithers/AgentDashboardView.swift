@@ -4,7 +4,7 @@ struct AgentDashboardView: View {
     @ObservedObject var workspace: WorkspaceState
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             dashboardHeader(theme: theme)
             Divider().background(theme.dividerColor)

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 import Foundation
 import UniformTypeIdentifiers
@@ -36,7 +37,7 @@ struct PaletteCommand: Identifiable {
     let title: String
     let icon: String
     let shortcut: String?
-    let action: () -> Void
+    let action: @MainActor () -> Void
 }
 
 struct RecentFolderEntry: Identifiable, Hashable {
@@ -87,6 +88,25 @@ struct EditorSelection: Hashable, Sendable {
     let line: Int
     let column: Int
     let length: Int
+}
+
+final class ObserverToken {
+    private let cancel: () -> Void
+    private var isActive = true
+
+    init(cancel: @escaping () -> Void) {
+        self.cancel = cancel
+    }
+
+    func invalidate() {
+        guard isActive else { return }
+        isActive = false
+        cancel()
+    }
+
+    deinit {
+        invalidate()
+    }
 }
 
 private enum SearchOutcome {
@@ -170,6 +190,11 @@ class WorkspaceState: ObservableObject {
         case workspace
     }
 
+    struct JJRevertActionInfo {
+        let snapshot: Snapshot
+        let isLatest: Bool
+    }
+
     private enum CloseDecision {
         case deny
         case allow(force: Bool)
@@ -249,16 +274,19 @@ class WorkspaceState: ObservableObject {
                 if editorText != Self.nonUTF8Placeholder {
                     setEditorText(Self.nonUTF8Placeholder)
                 }
+                clearNativeDirty(selectedFileURL)
                 return
             }
-            let wasModified = isNativeFileModified(selectedFileURL)
-            openFileContents[selectedFileURL] = editorText
-            let nowModified = isNativeFileModified(selectedFileURL)
+            let canonicalURL = canonicalFileURL(selectedFileURL)
+            let wasModified = isNativeFileModified(canonicalURL)
+            openFileContents[canonicalURL] = editorText
+            markNativeDirty(canonicalURL)
+            let nowModified = isNativeFileModified(canonicalURL)
             if wasModified != nowModified {
                 updateWindowTitle()
             }
-            scheduleAutoSaveIfNeeded(for: selectedFileURL)
-            updateRecentEdit(for: selectedFileURL)
+            scheduleAutoSaveIfNeeded(for: canonicalURL)
+            updateRecentEdit(for: canonicalURL)
         }
     }
     @Published var currentLanguage: SupportedLanguage?
@@ -268,9 +296,9 @@ class WorkspaceState: ObservableObject {
             scheduleChatHistoryPersist()
         }
     }
-    @Published var theme: AppTheme = .default {
+    @Published var preferences: EditorPreferences = EditorPreferences() {
         didSet {
-            applyWindowAppearance()
+            configurePreferences()
         }
     }
     @Published var activeDiffPreview: DiffPreview?
@@ -351,285 +379,11 @@ class WorkspaceState: ObservableObject {
             showToast("Auto Save Interval: \(Self.formatInterval(autoSaveInterval))")
         }
     }
-    @Published var editorFontName: String = {
-        if let value = UserDefaults.standard.string(forKey: WorkspaceState.editorFontNameKey),
-           !value.isEmpty {
-            return value
-        }
-        return WorkspaceState.defaultEditorFontName
-    }() {
-        didSet {
-            let normalized = Self.normalizeEditorFontName(editorFontName, size: editorFontSize)
-            if normalized != editorFontName {
-                editorFontName = normalized
-                return
-            }
-            UserDefaults.standard.set(editorFontName, forKey: Self.editorFontNameKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var editorFontSize: Double = {
-        let value = UserDefaults.standard.double(forKey: WorkspaceState.editorFontSizeKey)
-        return value > 0 ? value : WorkspaceState.defaultEditorFontSize
-    }() {
-        didSet {
-            let clamped = Self.clampEditorFontSize(editorFontSize)
-            if clamped != editorFontSize {
-                editorFontSize = clamped
-                return
-            }
-            UserDefaults.standard.set(editorFontSize, forKey: Self.editorFontSizeKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var editorLigaturesEnabled: Bool = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.editorLigaturesEnabledKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: WorkspaceState.editorLigaturesEnabledKey)
-    }() {
-        didSet {
-            UserDefaults.standard.set(editorLigaturesEnabled, forKey: Self.editorLigaturesEnabledKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var editorLineSpacing: Double = {
-        guard UserDefaults.standard.object(forKey: WorkspaceState.editorLineSpacingKey) != nil else {
-            return WorkspaceState.defaultEditorLineSpacing
-        }
-        let value = UserDefaults.standard.double(forKey: WorkspaceState.editorLineSpacingKey)
-        return WorkspaceState.clampEditorLineSpacing(value)
-    }() {
-        didSet {
-            let clamped = Self.clampEditorLineSpacing(editorLineSpacing)
-            if clamped != editorLineSpacing {
-                editorLineSpacing = clamped
-                return
-            }
-            UserDefaults.standard.set(editorLineSpacing, forKey: Self.editorLineSpacingKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var editorCharacterSpacing: Double = {
-        guard UserDefaults.standard.object(forKey: WorkspaceState.editorCharacterSpacingKey) != nil else {
-            return WorkspaceState.defaultEditorCharacterSpacing
-        }
-        let value = UserDefaults.standard.double(forKey: WorkspaceState.editorCharacterSpacingKey)
-        return WorkspaceState.clampEditorCharacterSpacing(value)
-    }() {
-        didSet {
-            let clamped = Self.clampEditorCharacterSpacing(editorCharacterSpacing)
-            if clamped != editorCharacterSpacing {
-                editorCharacterSpacing = clamped
-                return
-            }
-            UserDefaults.standard.set(editorCharacterSpacing, forKey: Self.editorCharacterSpacingKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var preferredNvimPath: String = {
-        UserDefaults.standard.string(forKey: WorkspaceState.nvimPathKey) ?? ""
-    }() {
-        didSet {
-            UserDefaults.standard.set(preferredNvimPath, forKey: Self.nvimPathKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var optionAsMeta: OptionAsMeta = {
-        if let raw = UserDefaults.standard.string(forKey: WorkspaceState.optionAsMetaKey),
-           let value = OptionAsMeta(rawValue: raw) {
-            return value
-        }
-        return .both
-    }() {
-        didSet {
-            UserDefaults.standard.set(optionAsMeta.rawValue, forKey: Self.optionAsMetaKey)
-            updateTerminalOptionAsMeta()
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var scrollbarVisibilityMode: ScrollbarVisibilityMode = {
-        if let raw = UserDefaults.standard.string(forKey: WorkspaceState.scrollbarVisibilityModeKey),
-           let value = ScrollbarVisibilityMode(rawValue: raw) {
-            return value
-        }
-        return .automatic
-    }() {
-        didSet {
-            UserDefaults.standard.set(scrollbarVisibilityMode.rawValue, forKey: Self.scrollbarVisibilityModeKey)
-            scheduleNvimSettingsSync()
-        }
-    }
     @Published var updateChannel: UpdateChannel = UpdateChannel.loadFromDefaults() {
         didSet {
             UserDefaults.standard.set(updateChannel.rawValue, forKey: UpdateChannel.userDefaultsKey)
         }
     }
-    @Published var showLineNumbers: Bool = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.showLineNumbersKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: WorkspaceState.showLineNumbersKey)
-    }() {
-        didSet {
-            UserDefaults.standard.set(showLineNumbers, forKey: Self.showLineNumbersKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var highlightCurrentLine: Bool = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.highlightCurrentLineKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: WorkspaceState.highlightCurrentLineKey)
-    }() {
-        didSet {
-            UserDefaults.standard.set(highlightCurrentLine, forKey: Self.highlightCurrentLineKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var showIndentGuides: Bool = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.showIndentGuidesKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: WorkspaceState.showIndentGuidesKey)
-    }() {
-        didSet {
-            UserDefaults.standard.set(showIndentGuides, forKey: Self.showIndentGuidesKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var showMinimap: Bool = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.showMinimapKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: WorkspaceState.showMinimapKey)
-    }() {
-        didSet {
-            UserDefaults.standard.set(showMinimap, forKey: Self.showMinimapKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var nvimFloatingBlurEnabled: Bool = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingBlurEnabledKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: WorkspaceState.nvimFloatingBlurEnabledKey)
-    }() {
-        didSet {
-            UserDefaults.standard.set(nvimFloatingBlurEnabled, forKey: Self.nvimFloatingBlurEnabledKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var nvimFloatingBlurRadius: Double = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingBlurRadiusKey) == nil {
-            return WorkspaceState.defaultFloatingBlurRadius
-        }
-        return UserDefaults.standard.double(forKey: WorkspaceState.nvimFloatingBlurRadiusKey)
-    }() {
-        didSet {
-            let clamped = Self.clampFloatingBlurRadius(nvimFloatingBlurRadius)
-            if clamped != nvimFloatingBlurRadius {
-                nvimFloatingBlurRadius = clamped
-                return
-            }
-            UserDefaults.standard.set(nvimFloatingBlurRadius, forKey: Self.nvimFloatingBlurRadiusKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var nvimFloatingCornerRadius: Double = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingCornerRadiusKey) == nil {
-            return WorkspaceState.defaultFloatingCornerRadius
-        }
-        return UserDefaults.standard.double(forKey: WorkspaceState.nvimFloatingCornerRadiusKey)
-    }() {
-        didSet {
-            let clamped = Self.clampFloatingCornerRadius(nvimFloatingCornerRadius)
-            if clamped != nvimFloatingCornerRadius {
-                nvimFloatingCornerRadius = clamped
-                return
-            }
-            UserDefaults.standard.set(nvimFloatingCornerRadius, forKey: Self.nvimFloatingCornerRadiusKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var nvimFloatingShadowEnabled: Bool = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingShadowEnabledKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: WorkspaceState.nvimFloatingShadowEnabledKey)
-    }() {
-        didSet {
-            UserDefaults.standard.set(nvimFloatingShadowEnabled, forKey: Self.nvimFloatingShadowEnabledKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var nvimFloatingShadowRadius: Double = {
-        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingShadowRadiusKey) == nil {
-            return WorkspaceState.defaultFloatingShadowRadius
-        }
-        return UserDefaults.standard.double(forKey: WorkspaceState.nvimFloatingShadowRadiusKey)
-    }() {
-        didSet {
-            let clamped = Self.clampFloatingShadowRadius(nvimFloatingShadowRadius)
-            if clamped != nvimFloatingShadowRadius {
-                nvimFloatingShadowRadius = clamped
-                return
-            }
-            UserDefaults.standard.set(nvimFloatingShadowRadius, forKey: Self.nvimFloatingShadowRadiusKey)
-            scheduleNvimSettingsSync()
-        }
-    }
-    @Published var isWindowTransparencyEnabled: Bool = UserDefaults.standard.bool(
-        forKey: WorkspaceState.windowTransparencyEnabledKey
-    ) {
-        didSet {
-            UserDefaults.standard.set(isWindowTransparencyEnabled, forKey: Self.windowTransparencyEnabledKey)
-            applyWindowAppearance()
-        }
-    }
-    @Published var windowOpacity: Double = {
-        let value = UserDefaults.standard.double(forKey: WorkspaceState.windowOpacityKey)
-        let initial = value > 0 ? value : 1.0
-        return clampWindowOpacity(initial)
-    }() {
-        didSet {
-            let clamped = Self.clampWindowOpacity(windowOpacity)
-            if clamped != windowOpacity {
-                windowOpacity = clamped
-                return
-            }
-            UserDefaults.standard.set(clamped, forKey: Self.windowOpacityKey)
-            applyWindowAppearance()
-        }
-    }
-#if DEBUG
-    @Published var isPerformanceOverlayEnabled: Bool = UserDefaults.standard.bool(
-        forKey: WorkspaceState.performanceOverlayEnabledKey
-    ) {
-        didSet {
-            UserDefaults.standard.set(isPerformanceOverlayEnabled, forKey: Self.performanceOverlayEnabledKey)
-            PerformanceMonitor.shared.setOverlayEnabled(isPerformanceOverlayEnabled)
-            showToast(isPerformanceOverlayEnabled ? "Performance Overlay On" : "Performance Overlay Off")
-        }
-    }
-    @Published var isPerformanceLoggingEnabled: Bool = UserDefaults.standard.bool(
-        forKey: WorkspaceState.performanceLoggingEnabledKey
-    ) {
-        didSet {
-            UserDefaults.standard.set(isPerformanceLoggingEnabled, forKey: Self.performanceLoggingEnabledKey)
-            PerformanceMonitor.shared.setLoggingEnabled(isPerformanceLoggingEnabled)
-            if isPerformanceLoggingEnabled {
-                if let logURL = PerformanceMonitor.shared.logFileURL {
-                    showToast("Logging perf metrics: \(logURL.lastPathComponent)")
-                } else {
-                    showToast("Performance logging on")
-                }
-            } else {
-                showToast("Performance logging off")
-            }
-        }
-    }
-#endif
     @Published var fileSearchQuery: String = "" {
         didSet {
             scheduleSearch()
@@ -680,15 +434,18 @@ class WorkspaceState: ObservableObject {
     }
     @Published var pendingSelection: EditorSelection?
     private var fileLoadTask: Task<Void, Never>?
+    private var fileReadTask: Task<(text: String, isUTF8: Bool), Never>?
     private var fileIndex: [FileIndexEntry] = []
     private var fileIndexTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    private var searchToken: Int = 0
     private var searchInFilesTask: Task<Void, Never>?
     private var searchInFilesToken: Int = 0
     private var searchPreviewTask: Task<Void, Never>?
     private var searchPreviewToken: Int = 0
     private var openFileContents: [URL: String] = [:]
     private var savedFileContents: [URL: String] = [:]
+    private var nativeDirtyFiles: Set<URL> = []
     private var suppressEditorTextUpdate = false
     private var suppressSelectionSync = false
     private var closeGuardsBypassed = false
@@ -699,10 +456,12 @@ class WorkspaceState: ObservableObject {
     private var recentFolderURLs: [URL] = []
     private var recentEditTimestamps: [URL: Date] = [:]
     private var recentEditLocations: [URL: [EditorEditLocation]] = [:]
+    private var recentEditRefreshTask: Task<Void, Never>?
     private var fileOpenObservers: [UUID: (URL) -> Void] = [:]
     private var fileCloseObservers: [UUID: (URL) -> Void] = [:]
     private var webviewViews: [URL: WKWebView] = [:]
     private var webviewTitleObservers: [URL: NSKeyValueObservation] = [:]
+    private var preferencesCancellable: AnyCancellable?
     private var toastTask: Task<Void, Never>?
     private var toastToken: Int = 0
     private var overlayTask: Task<Void, Never>?
@@ -759,10 +518,6 @@ class WorkspaceState: ObservableObject {
     private static let autoSaveIntervalKey = "smithers.autoSaveInterval"
     private static let defaultAutoSaveInterval: TimeInterval = 5
     static let progressBarHeightRange: ClosedRange<CGFloat> = 1...8
-    static let windowOpacityRange: ClosedRange<Double> = 0.7...1.0
-    static let floatingBlurRadiusRange: ClosedRange<Double> = 0...30
-    static let floatingCornerRadiusRange: ClosedRange<Double> = 0...20
-    static let floatingShadowRadiusRange: ClosedRange<Double> = 0...30
     private static let progressBarAutoHideDelay: TimeInterval = 0.45
     private static let nvimMessageMaxCount = 6
     private static let nvimDefaultMessageTimeout: TimeInterval = 4
@@ -770,45 +525,10 @@ class WorkspaceState: ObservableObject {
     private static let progressBarHeightKey = "smithers.progressBarHeight"
     private static let progressBarFillColorKey = "smithers.progressBarFillColor"
     private static let progressBarTrackColorKey = "smithers.progressBarTrackColor"
-    private static let editorFontNameKey = "smithers.editorFontName"
-    private static let editorFontSizeKey = "smithers.editorFontSize"
-    private static let editorLigaturesEnabledKey = "smithers.editorLigaturesEnabled"
-    private static let editorLineSpacingKey = "smithers.editorLineSpacing"
-    private static let editorCharacterSpacingKey = "smithers.editorCharacterSpacing"
-    private static let nvimPathKey = "smithers.nvimPath"
-    private static let optionAsMetaKey = "smithers.optionAsMeta"
-    private static let scrollbarVisibilityModeKey = "smithers.scrollbarVisibilityMode"
-    private static let showLineNumbersKey = "smithers.showLineNumbers"
-    private static let highlightCurrentLineKey = "smithers.highlightCurrentLine"
-    private static let showIndentGuidesKey = "smithers.showIndentGuides"
-    private static let showMinimapKey = "smithers.showMinimap"
-    private static let nvimFloatingBlurEnabledKey = "smithers.nvimFloatingBlurEnabled"
-    private static let nvimFloatingBlurRadiusKey = "smithers.nvimFloatingBlurRadius"
-    private static let nvimFloatingCornerRadiusKey = "smithers.nvimFloatingCornerRadius"
-    private static let nvimFloatingShadowEnabledKey = "smithers.nvimFloatingShadowEnabled"
-    private static let nvimFloatingShadowRadiusKey = "smithers.nvimFloatingShadowRadius"
-    private static let windowTransparencyEnabledKey = "smithers.windowTransparencyEnabled"
-    private static let windowOpacityKey = "smithers.windowOpacity"
-#if DEBUG
-    private static let performanceOverlayEnabledKey = "smithers.performanceOverlayEnabled"
-    private static let performanceLoggingEnabledKey = "smithers.performanceLoggingEnabled"
-#endif
-    private static let defaultEditorFontSize: Double = 13
-    private static let defaultEditorFontName: String = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).fontName
-    private static let defaultEditorLineSpacing: Double = 0
-    private static let defaultEditorCharacterSpacing: Double = 0
-    private static let defaultFloatingBlurRadius: Double = 12
-    private static let defaultFloatingCornerRadius: Double = 8
-    private static let defaultFloatingShadowRadius: Double = 12
-    private static let defaultFloatingShadowOpacity: Float = 0.25
-    static let minEditorFontSize: Double = 9
-    static let maxEditorFontSize: Double = 32
     nonisolated static let nonUTF8Placeholder = """
     This file is not UTF-8 and is opened as read-only.
     Open it in an external editor to modify.
     """
-    static let editorLineSpacingRange: ClosedRange<Double> = 0...12
-    static let editorCharacterSpacingRange: ClosedRange<Double> = 0...4
     private var terminalCounter = 0
     private let ghosttyApp = GhosttyApp.shared
     private let inputMethodSwitcher = InputMethodSwitcher()
@@ -835,78 +555,47 @@ class WorkspaceState: ObservableObject {
     ]
 
     init() {
+        configurePreferences()
         recentFileURLs = Self.loadRecentURLs(key: Self.recentFilesKey)
         recentFolderURLs = Self.loadRecentURLs(key: Self.recentFoldersKey)
         refreshRecentEntries()
-#if DEBUG
-        PerformanceMonitor.shared.setOverlayEnabled(isPerformanceOverlayEnabled)
-        PerformanceMonitor.shared.setLoggingEnabled(isPerformanceLoggingEnabled)
-#endif
     }
 
-    var editorFont: NSFont {
-        Self.resolveEditorFont(name: editorFontName, size: editorFontSize)
-    }
-
-    var editorFontDisplayName: String {
-        editorFont.displayName ?? editorFontName
-    }
-
-    var availableEditorFonts: [String] {
-        Self.monospacedFontNames
-    }
-
-    var nvimGuifont: String {
-        let displayName = editorFont.displayName ?? editorFontName
-        let escaped = Self.escapeGuifontName(displayName)
-        let size = Int(editorFontSize.rounded())
-        return "\(escaped):h\(size)"
+    private func configurePreferences() {
+        preferences.onApplyWindowAppearance = { [weak self] in
+            self?.applyWindowAppearance()
+        }
+        preferences.onScheduleNvimSettingsSync = { [weak self] in
+            self?.scheduleNvimSettingsSync()
+        }
+        preferences.onUpdateTerminalOptionAsMeta = { [weak self] in
+            self?.updateTerminalOptionAsMeta()
+        }
+        preferences.onShowToast = { [weak self] message in
+            self?.showToast(message)
+        }
+        preferencesCancellable?.cancel()
+        preferencesCancellable = preferences.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     var nvimFloatingWindowEffects: NvimFloatingWindowEffects {
-        NvimFloatingWindowEffects(
+        let prefs = preferences
+        return NvimFloatingWindowEffects(
             windows: nvimFloatingWindows,
-            blurEnabled: nvimFloatingBlurEnabled,
-            blurRadius: CGFloat(nvimFloatingBlurRadius),
-            cornerRadius: CGFloat(nvimFloatingCornerRadius),
-            shadowEnabled: nvimFloatingShadowEnabled,
-            shadowRadius: CGFloat(nvimFloatingShadowRadius),
-            shadowOpacity: Self.defaultFloatingShadowOpacity,
+            blurEnabled: prefs.nvimFloatingBlurEnabled,
+            blurRadius: CGFloat(prefs.nvimFloatingBlurRadius),
+            cornerRadius: CGFloat(prefs.nvimFloatingCornerRadius),
+            shadowEnabled: prefs.nvimFloatingShadowEnabled,
+            shadowRadius: CGFloat(prefs.nvimFloatingShadowRadius),
+            shadowOpacity: EditorPreferences.defaultFloatingShadowOpacity,
             shadowOffset: CGSize(width: 0, height: -2)
         )
     }
 
-    var nvimPathStatusMessage: String {
-        if preferredNvimPath.isEmpty {
-            return "Using PATH lookup"
-        }
-        let expanded = expandedNvimPath
-        if FileManager.default.isExecutableFile(atPath: expanded) {
-            return "Using \(expanded)"
-        }
-        return "Neovim path is not executable"
-    }
-
-    var nvimPathStatusIsError: Bool {
-        !preferredNvimPath.isEmpty && !FileManager.default.isExecutableFile(atPath: expandedNvimPath)
-    }
-
-    func chooseNvimPath() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            preferredNvimPath = url.path
-        }
-    }
-
-    func clearNvimPath() {
-        preferredNvimPath = ""
-    }
-
     private func updateTerminalOptionAsMeta() {
+        let optionAsMeta = preferences.optionAsMeta
         for view in terminalViews.values {
             view.optionAsMeta = optionAsMeta
         }
@@ -938,37 +627,39 @@ class WorkspaceState: ObservableObject {
     }
 
     private func nvimSettingsPayload() -> [String: MsgPackValue] {
-        [
-            "smithers_font_name": .string(editorFontName),
-            "smithers_font_size": .double(editorFontSize),
-            "smithers_font_ligatures": .bool(editorLigaturesEnabled),
-            "smithers_line_spacing": .double(editorLineSpacing),
-            "smithers_character_spacing": .double(editorCharacterSpacing),
-            "smithers_option_as_meta": .string(optionAsMeta.rawValue),
-            "smithers_scrollbar_mode": .string(scrollbarVisibilityMode.rawValue),
-            "smithers_show_line_numbers": .bool(showLineNumbers),
-            "smithers_highlight_current_line": .bool(highlightCurrentLine),
-            "smithers_show_indent_guides": .bool(showIndentGuides),
-            "smithers_show_minimap": .bool(showMinimap),
-            "smithers_floating_blur_enabled": .bool(nvimFloatingBlurEnabled),
-            "smithers_floating_blur_radius": .double(nvimFloatingBlurRadius),
-            "smithers_floating_corner_radius": .double(nvimFloatingCornerRadius),
-            "smithers_floating_shadow_enabled": .bool(nvimFloatingShadowEnabled),
-            "smithers_floating_shadow_radius": .double(nvimFloatingShadowRadius),
-            "smithers_nvim_path": .string(preferredNvimPath.isEmpty ? "" : expandedNvimPath),
+        let prefs = preferences
+        return [
+            "smithers_font_name": .string(prefs.editorFontName),
+            "smithers_font_size": .double(prefs.editorFontSize),
+            "smithers_font_ligatures": .bool(prefs.editorLigaturesEnabled),
+            "smithers_line_spacing": .double(prefs.editorLineSpacing),
+            "smithers_character_spacing": .double(prefs.editorCharacterSpacing),
+            "smithers_option_as_meta": .string(prefs.optionAsMeta.rawValue),
+            "smithers_scrollbar_mode": .string(prefs.scrollbarVisibilityMode.rawValue),
+            "smithers_show_line_numbers": .bool(prefs.showLineNumbers),
+            "smithers_highlight_current_line": .bool(prefs.highlightCurrentLine),
+            "smithers_show_indent_guides": .bool(prefs.showIndentGuides),
+            "smithers_show_minimap": .bool(prefs.showMinimap),
+            "smithers_floating_blur_enabled": .bool(prefs.nvimFloatingBlurEnabled),
+            "smithers_floating_blur_radius": .double(prefs.nvimFloatingBlurRadius),
+            "smithers_floating_corner_radius": .double(prefs.nvimFloatingCornerRadius),
+            "smithers_floating_shadow_enabled": .bool(prefs.nvimFloatingShadowEnabled),
+            "smithers_floating_shadow_radius": .double(prefs.nvimFloatingShadowRadius),
+            "smithers_nvim_path": .string(prefs.preferredNvimPath.isEmpty ? "" : prefs.expandedNvimPath),
         ]
     }
 
     private func nvimOptionsPayload() -> [String: MsgPackValue] {
         [
-            "guifont": .string(nvimGuifont),
+            "guifont": .string(preferences.nvimGuifont),
         ]
     }
 
     private func resolveNvimPath() throws -> String {
+        let prefs = preferences
         let fm = FileManager.default
-        if !preferredNvimPath.isEmpty {
-            let expanded = expandedNvimPath
+        if !prefs.preferredNvimPath.isEmpty {
+            let expanded = prefs.expandedNvimPath
             if fm.isExecutableFile(atPath: expanded) {
                 return expanded
             }
@@ -978,84 +669,6 @@ class WorkspaceState: ObservableObject {
             return path
         }
         throw NvimController.ControllerError.missingNvim
-    }
-
-    private var expandedNvimPath: String {
-        (preferredNvimPath as NSString).expandingTildeInPath
-    }
-
-    private static let monospacedFontNames: [String] = {
-        let size = CGFloat(defaultEditorFontSize)
-        let names = NSFontManager.shared.availableFonts
-        var results: [String] = []
-        results.reserveCapacity(names.count / 4)
-        for name in names {
-            guard let font = NSFont(name: name, size: size) else { continue }
-            guard font.isFixedPitch else { continue }
-            results.append(name)
-        }
-        if !results.contains(defaultEditorFontName) {
-            results.append(defaultEditorFontName)
-        }
-        return Array(Set(results)).sorted()
-    }()
-
-    private static func resolveEditorFont(name: String, size: Double) -> NSFont {
-        let clamped = clampEditorFontSize(size)
-        if let font = NSFont(name: name, size: CGFloat(clamped)) {
-            return font
-        }
-        return NSFont.monospacedSystemFont(ofSize: CGFloat(clamped), weight: .regular)
-    }
-
-    private static func escapeGuifontName(_ name: String) -> String {
-        var escaped = ""
-        escaped.reserveCapacity(name.count)
-        for ch in name {
-            switch ch {
-            case " ", "\\", ",", ":":
-                escaped.append("\\")
-                escaped.append(ch)
-            default:
-                escaped.append(ch)
-            }
-        }
-        return escaped
-    }
-
-    private static func normalizeEditorFontName(_ name: String, size: Double) -> String {
-        if NSFont(name: name, size: CGFloat(size)) != nil {
-            return name
-        }
-        return defaultEditorFontName
-    }
-
-    private static func clampEditorFontSize(_ size: Double) -> Double {
-        min(max(size, minEditorFontSize), maxEditorFontSize)
-    }
-
-    private static func clampEditorLineSpacing(_ value: Double) -> Double {
-        min(max(value, editorLineSpacingRange.lowerBound), editorLineSpacingRange.upperBound)
-    }
-
-    private static func clampEditorCharacterSpacing(_ value: Double) -> Double {
-        min(max(value, editorCharacterSpacingRange.lowerBound), editorCharacterSpacingRange.upperBound)
-    }
-
-    private static func clampWindowOpacity(_ value: Double) -> Double {
-        min(max(value, windowOpacityRange.lowerBound), windowOpacityRange.upperBound)
-    }
-
-    private static func clampFloatingBlurRadius(_ value: Double) -> Double {
-        min(max(value, floatingBlurRadiusRange.lowerBound), floatingBlurRadiusRange.upperBound)
-    }
-
-    private static func clampFloatingCornerRadius(_ value: Double) -> Double {
-        min(max(value, floatingCornerRadiusRange.lowerBound), floatingCornerRadiusRange.upperBound)
-    }
-
-    private static func clampFloatingShadowRadius(_ value: Double) -> Double {
-        min(max(value, floatingShadowRadiusRange.lowerBound), floatingShadowRadiusRange.upperBound)
     }
 
     func persistChatHistory() {
@@ -1078,12 +691,14 @@ class WorkspaceState: ObservableObject {
         guard let rootDirectory else { return }
         chatHistoryPersistTask?.cancel()
         let root = rootDirectory
-        chatHistoryPersistTask = Task.detached { [weak self] in
+        chatHistoryPersistTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard let self, !Task.isCancelled else { return }
-            let messages = await MainActor.run { self.chatMessages }
+            let messages = self.chatMessages
             guard !Task.isCancelled else { return }
-            ChatHistoryStore.saveHistory(messages, for: root)
+            DispatchQueue.global(qos: .utility).async {
+                ChatHistoryStore.saveHistory(messages, for: root)
+            }
         }
     }
 
@@ -1243,7 +858,7 @@ class WorkspaceState: ObservableObject {
         stopCodexService()
         closeAllTerminals()
         saveLastWorkspace(url)
-        rootDirectory = url
+        rootDirectory = canonicalFileURL(url)
         addRecentFolder(url)
         suppressSessionPersistence = true
         fileTree = FileItem.loadTree(at: url)
@@ -1253,8 +868,22 @@ class WorkspaceState: ObservableObject {
         isEditorLoading = false
         currentLanguage = nil
         fileLoadTask?.cancel()
+        fileLoadTask = nil
+        fileReadTask?.cancel()
+        fileReadTask = nil
+        fileIndexTask?.cancel()
+        fileIndexTask = nil
+        searchTask?.cancel()
+        searchTask = nil
+        searchInFilesTask?.cancel()
+        searchInFilesTask = nil
+        searchPreviewTask?.cancel()
+        searchPreviewTask = nil
+        chatHistoryPersistTask?.cancel()
+        chatHistoryPersistTask = nil
         openFileContents = [:]
         savedFileContents = [:]
+        nativeDirtyFiles = []
         nonUTF8Files = []
         fileIndex = []
         fileSearchResults = []
@@ -1278,9 +907,15 @@ class WorkspaceState: ObservableObject {
         chatSessions = [:]
         activeChatId = Self.mainChatId
         diffTabs = [:]
+        let webviewIDs = Array(webviewTabs.keys)
+        for id in webviewIDs {
+            closeWebview(id)
+        }
         webviewTabs = [:]
         webviewViews = [:]
         webviewTitleObservers = [:]
+        skillWatchers.forEach { $0.invalidate() }
+        skillWatchers = []
         let storedThreadId = ThreadHistoryStore.loadThreadId(for: url)
         activeThreadId = storedThreadId
         if storedThreadId == nil {
@@ -1435,20 +1070,24 @@ class WorkspaceState: ObservableObject {
         }
     }
 
-    func addFileOpenObserver(_ handler: @escaping (URL) -> Void) -> UUID {
+    func addFileOpenObserver(_ handler: @escaping (URL) -> Void) -> ObserverToken {
         let id = UUID()
         fileOpenObservers[id] = handler
-        return id
+        return ObserverToken { [weak self] in
+            self?.fileOpenObservers.removeValue(forKey: id)
+        }
     }
 
     func removeFileOpenObserver(_ id: UUID) {
         fileOpenObservers.removeValue(forKey: id)
     }
 
-    func addFileCloseObserver(_ handler: @escaping (URL) -> Void) -> UUID {
+    func addFileCloseObserver(_ handler: @escaping (URL) -> Void) -> ObserverToken {
         let id = UUID()
         fileCloseObservers[id] = handler
-        return id
+        return ObserverToken { [weak self] in
+            self?.fileCloseObservers.removeValue(forKey: id)
+        }
     }
 
     func removeFileCloseObserver(_ id: UUID) {
@@ -1456,10 +1095,10 @@ class WorkspaceState: ObservableObject {
     }
 
     func isFileOpen(_ url: URL) -> Bool {
-        let normalized = url.standardizedFileURL
+        let canonical = canonicalFileURL(url)
         return openFiles.contains { candidate in
             guard isRegularFileURL(candidate) else { return false }
-            return candidate.standardizedFileURL == normalized
+            return canonicalFileURL(candidate) == canonical
         }
     }
 
@@ -1527,6 +1166,18 @@ class WorkspaceState: ObservableObject {
         return path == rootPath || path.hasPrefix(prefix)
     }
 
+    private func canonicalFileURL(_ url: URL) -> URL {
+        url.isFileURL ? url.standardizedFileURL : url
+    }
+
+    private func markNativeDirty(_ url: URL) {
+        nativeDirtyFiles.insert(canonicalFileURL(url))
+    }
+
+    private func clearNativeDirty(_ url: URL) {
+        nativeDirtyFiles.remove(canonicalFileURL(url))
+    }
+
     private func commonAncestorDirectory(for urls: [URL]) -> URL? {
         guard var commonComponents = urls.first?.standardizedFileURL.pathComponents else { return nil }
         for url in urls.dropFirst() {
@@ -1591,32 +1242,31 @@ class WorkspaceState: ObservableObject {
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
             return
         }
-        if isRegularFileURL(url) {
-            addRecentFile(url)
+        let canonicalURL = canonicalFileURL(url)
+        if isRegularFileURL(canonicalURL) {
+            addRecentFile(canonicalURL)
         }
         if isNvimModeEnabled {
             isEditorLoading = false
-            openFileInNvim(url, line: nil, column: nil)
+            openFileInNvim(canonicalURL, line: nil, column: nil)
             return
         }
-        if !openFiles.contains(url) {
-            openFiles.append(url)
+        if !openFiles.contains(canonicalURL) {
+            openFiles.append(canonicalURL)
         }
-        selectedFileURL = url
-        currentLanguage = SupportedLanguage.fromFileName(url.lastPathComponent)
+        selectedFileURL = canonicalURL
+        currentLanguage = SupportedLanguage.fromFileName(canonicalURL.lastPathComponent)
         fileLoadTask?.cancel()
-        let normalizedURL = url.standardizedFileURL
-        if let cached = openFileContents[normalizedURL] ?? openFileContents[url] {
-            if savedFileContents[normalizedURL] == nil {
-                savedFileContents[normalizedURL] = cached
-            }
-            if savedFileContents[url] == nil {
-                savedFileContents[url] = cached
+        fileReadTask?.cancel()
+        if let cached = openFileContents[canonicalURL] {
+            if savedFileContents[canonicalURL] == nil {
+                savedFileContents[canonicalURL] = cached
             }
             isEditorLoading = false
-            if isNonUTF8File(normalizedURL) {
+            if isNonUTF8File(canonicalURL) {
                 currentLanguage = nil
                 setEditorText(Self.nonUTF8Placeholder)
+                clearNativeDirty(canonicalURL)
             } else {
                 setEditorText(cached)
             }
@@ -1624,31 +1274,28 @@ class WorkspaceState: ObservableObject {
         }
         isEditorLoading = true
         setEditorText("")
-        let requestedURL = url
+        let requestedURL = canonicalURL
+        let readTask = Task.detached(priority: .userInitiated) {
+            Self.loadUTF8Text(from: requestedURL)
+        }
+        fileReadTask = readTask
         fileLoadTask = Task { [weak self] in
-            let loadResult = await Task.detached(priority: .userInitiated) {
-                Self.loadUTF8Text(from: requestedURL)
-            }.value
+            let loadResult = await readTask.value
             guard !Task.isCancelled, let self else { return }
-            let normalized = requestedURL.standardizedFileURL
+            let canonical = requestedURL
             if loadResult.isUTF8 {
-                self.clearNonUTF8File(normalized)
+                self.clearNonUTF8File(canonical)
             } else {
-                self.markNonUTF8File(normalized)
+                self.markNonUTF8File(canonical)
             }
-            if self.savedFileContents[normalized] == nil {
-                self.savedFileContents[normalized] = loadResult.text
+            if self.savedFileContents[canonical] == nil {
+                self.savedFileContents[canonical] = loadResult.text
             }
-            if self.savedFileContents[requestedURL] == nil {
-                self.savedFileContents[requestedURL] = loadResult.text
+            if self.openFileContents[canonical] == nil {
+                self.openFileContents[canonical] = loadResult.text
             }
-            if self.openFileContents[normalized] == nil {
-                self.openFileContents[normalized] = loadResult.text
-            }
-            if self.openFileContents[requestedURL] == nil {
-                self.openFileContents[requestedURL] = loadResult.text
-            }
-            guard self.selectedFileURL == requestedURL else { return }
+            self.clearNativeDirty(canonical)
+            guard self.selectedFileURL == canonical else { return }
             if loadResult.isUTF8 {
                 self.setEditorText(loadResult.text)
             } else {
@@ -1680,44 +1327,46 @@ class WorkspaceState: ObservableObject {
 
     private func closeFile(_ url: URL, force: Bool) {
         guard let index = openFiles.firstIndex(of: url) else { return }
-        if isNvimModeEnabled && isRegularFileURL(url) {
+        let canonicalURL = canonicalFileURL(url)
+        if isNvimModeEnabled && isRegularFileURL(canonicalURL) {
             let wasSelected = selectedFileURL == url
             openFiles.remove(at: index)
-            openFileContents.removeValue(forKey: url)
-            savedFileContents.removeValue(forKey: url)
-            savedFileContents.removeValue(forKey: url.standardizedFileURL)
-            clearNonUTF8File(url)
+            openFileContents.removeValue(forKey: canonicalURL)
+            savedFileContents.removeValue(forKey: canonicalURL)
+            nativeDirtyFiles.remove(canonicalURL)
+            clearNonUTF8File(canonicalURL)
             if wasSelected {
                 selectedFileURL = nil
                 currentLanguage = nil
                 setEditorText("")
             }
             Task { [weak self] in
-                await self?.nvimController?.closeFile(url, force: force)
+                await self?.nvimController?.closeFile(canonicalURL, force: force)
             }
             return
         }
-        let wasSelected = selectedFileURL == url
+        let wasSelected = selectedFileURL == canonicalURL
         openFiles.remove(at: index)
-        if isChatURL(url) {
-            if let chatId = chatId(for: url) {
+        if isChatURL(canonicalURL) {
+            if let chatId = chatId(for: canonicalURL) {
                 chatSessions.removeValue(forKey: chatId)
             }
-        } else if isTerminalURL(url) {
-            closeTerminal(url)
-        } else if isDiffURL(url) {
-            diffTabs.removeValue(forKey: url)
-        } else if isWebviewURL(url) {
-            closeWebview(url)
+        } else if isTerminalURL(canonicalURL) {
+            closeTerminal(canonicalURL)
+        } else if isDiffURL(canonicalURL) {
+            diffTabs.removeValue(forKey: canonicalURL)
+        } else if isWebviewURL(canonicalURL) {
+            closeWebview(canonicalURL)
         } else {
-            openFileContents.removeValue(forKey: url)
-            savedFileContents.removeValue(forKey: url)
-            savedFileContents.removeValue(forKey: url.standardizedFileURL)
-            clearNonUTF8File(url)
+            openFileContents.removeValue(forKey: canonicalURL)
+            savedFileContents.removeValue(forKey: canonicalURL)
+            nativeDirtyFiles.remove(canonicalURL)
+            clearNonUTF8File(canonicalURL)
         }
 
         guard wasSelected else { return }
         fileLoadTask?.cancel()
+        fileReadTask?.cancel()
         if openFiles.isEmpty {
             selectedFileURL = nil
             currentLanguage = nil
@@ -2358,12 +2007,13 @@ class WorkspaceState: ObservableObject {
     }
 
     func refreshFileTreeForNewFile(_ url: URL) {
-        let parentURL = url.deletingLastPathComponent()
+        let canonicalURL = canonicalFileURL(url)
+        let parentURL = canonicalURL.deletingLastPathComponent()
         guard let rootDirectory else { return }
         // Only refresh if the file is within the workspace
-        guard url.path.hasPrefix(rootDirectory.path) else { return }
+        guard isURL(canonicalURL, within: rootDirectory) else { return }
         // Check if the file already exists in the tree — if so, nothing to do
-        if fileTreeContains(url: url, in: fileTree) { return }
+        if fileTreeContains(url: canonicalURL, in: fileTree) { return }
         // Reload the parent directory's children in the tree
         let newChildren = FileItem.loadShallowChildren(of: parentURL)
         if parentURL == rootDirectory {
@@ -2391,27 +2041,26 @@ class WorkspaceState: ObservableObject {
     }
 
     private func updateOpenFilesForFileRename(from oldURL: URL, to newURL: URL) {
-        if let index = openFiles.firstIndex(of: oldURL) {
-            openFiles[index] = newURL
+        let oldCanonical = canonicalFileURL(oldURL)
+        let newCanonical = canonicalFileURL(newURL)
+        if let index = openFiles.firstIndex(of: oldCanonical) {
+            openFiles[index] = newCanonical
         }
-        if selectedFileURL == oldURL {
-            selectedFileURL = newURL
+        if selectedFileURL == oldCanonical {
+            selectedFileURL = newCanonical
         }
-        if isNonUTF8File(oldURL) {
-            clearNonUTF8File(oldURL)
-            markNonUTF8File(newURL)
+        if isNonUTF8File(oldCanonical) {
+            clearNonUTF8File(oldCanonical)
+            markNonUTF8File(newCanonical)
         }
-        if let cached = openFileContents.removeValue(forKey: oldURL) {
-            openFileContents[newURL] = cached
+        if let cached = openFileContents.removeValue(forKey: oldCanonical) {
+            openFileContents[newCanonical] = cached
         }
-        if let cached = openFileContents.removeValue(forKey: oldURL.standardizedFileURL) {
-            openFileContents[newURL.standardizedFileURL] = cached
+        if let saved = savedFileContents.removeValue(forKey: oldCanonical) {
+            savedFileContents[newCanonical] = saved
         }
-        if let saved = savedFileContents.removeValue(forKey: oldURL) {
-            savedFileContents[newURL] = saved
-        }
-        if let saved = savedFileContents.removeValue(forKey: oldURL.standardizedFileURL) {
-            savedFileContents[newURL.standardizedFileURL] = saved
+        if nativeDirtyFiles.remove(oldCanonical) != nil {
+            nativeDirtyFiles.insert(newCanonical)
         }
     }
 
@@ -2422,12 +2071,12 @@ class WorkspaceState: ObservableObject {
         openFiles = openFiles.map { url in
             guard url.path.hasPrefix(oldPath) else { return url }
             let suffix = String(url.path.dropFirst(oldPath.count))
-            return URL(fileURLWithPath: newPath + suffix)
+            return canonicalFileURL(URL(fileURLWithPath: newPath + suffix))
         }
 
         if let selectedFileURL, selectedFileURL.path.hasPrefix(oldPath) {
             let suffix = String(selectedFileURL.path.dropFirst(oldPath.count))
-            self.selectedFileURL = URL(fileURLWithPath: newPath + suffix)
+            self.selectedFileURL = canonicalFileURL(URL(fileURLWithPath: newPath + suffix))
         }
 
         func remapKeys(_ input: [URL: String]) -> [URL: String] {
@@ -2436,10 +2085,10 @@ class WorkspaceState: ObservableObject {
             for (url, value) in input {
                 if url.path.hasPrefix(oldPath) {
                     let suffix = String(url.path.dropFirst(oldPath.count))
-                    let updated = URL(fileURLWithPath: newPath + suffix)
+                    let updated = canonicalFileURL(URL(fileURLWithPath: newPath + suffix))
                     output[updated] = value
                 } else {
-                    output[url] = value
+                    output[canonicalFileURL(url)] = value
                 }
             }
             return output
@@ -2447,12 +2096,17 @@ class WorkspaceState: ObservableObject {
 
         openFileContents = remapKeys(openFileContents)
         savedFileContents = remapKeys(savedFileContents)
+        nativeDirtyFiles = Set(nativeDirtyFiles.map { url in
+            guard url.path.hasPrefix(oldPath) else { return canonicalFileURL(url) }
+            let suffix = String(url.path.dropFirst(oldPath.count))
+            return canonicalFileURL(URL(fileURLWithPath: newPath + suffix))
+        })
         if !nonUTF8Files.isEmpty {
             let updatedNonUTF8 = nonUTF8Files.map { url -> URL in
                 let path = url.path
                 guard path.hasPrefix(oldPath) else { return url }
                 let suffix = String(path.dropFirst(oldPath.count))
-                return URL(fileURLWithPath: newPath + suffix)
+                return canonicalFileURL(URL(fileURLWithPath: newPath + suffix))
             }
             nonUTF8Files = Set(updatedNonUTF8.map { $0.standardizedFileURL })
         }
@@ -2494,17 +2148,20 @@ class WorkspaceState: ObservableObject {
     }
 
     func handleNvimBufferDelete(url: URL) {
-        let normalizedURL = url.standardizedFileURL
-        guard let index = openFiles.firstIndex(of: normalizedURL) else { return }
+        let canonicalURL = canonicalFileURL(url)
+        guard let index = openFiles.firstIndex(of: canonicalURL) else { return }
         openFiles.remove(at: index)
-        openFileContents.removeValue(forKey: normalizedURL)
-        nvimModifiedBuffers.removeAll { $0.url?.standardizedFileURL == normalizedURL }
-        if selectedFileURL == normalizedURL {
+        openFileContents.removeValue(forKey: canonicalURL)
+        savedFileContents.removeValue(forKey: canonicalURL)
+        nativeDirtyFiles.remove(canonicalURL)
+        clearNonUTF8File(canonicalURL)
+        nvimModifiedBuffers.removeAll { $0.url?.standardizedFileURL == canonicalURL }
+        if selectedFileURL == canonicalURL {
             selectedFileURL = nil
             currentLanguage = nil
             setEditorText("")
         }
-        if nvimCurrentFilePath == normalizedURL.path {
+        if nvimCurrentFilePath == canonicalURL.path {
             nvimCurrentFilePath = nil
         }
     }
@@ -2548,8 +2205,13 @@ class WorkspaceState: ObservableObject {
         let entry = NvimModifiedBuffer(buffer: bufferId, name: name, listed: listed, url: url)
         updateModifiedEntry(entry, modified: modified)
         if modified, let url {
-            updateRecentEdit(for: url)
+            updateRecentEdit(for: canonicalFileURL(url))
         }
+    }
+
+    func handleNvimBufferWrite(url: URL) {
+        refreshFileTreeForNewFile(url)
+        snapshotOnSaveIfEnabled(url: url.standardizedFileURL)
     }
 
     func handleNvimModeChange(rawMode: String) {
@@ -2610,20 +2272,9 @@ class WorkspaceState: ObservableObject {
     }
 
     private func isNativeFileModified(_ url: URL) -> Bool {
-        if isNonUTF8File(url) {
-            return false
-        }
-        let normalized = url.standardizedFileURL
-        guard let saved = savedFileContents[normalized] ?? savedFileContents[url] else {
-            return false
-        }
-        if let current = openFileContents[normalized] ?? openFileContents[url] {
-            return current != saved
-        }
-        if selectedFileURL == normalized {
-            return editorText != saved
-        }
-        return false
+        guard !isNonUTF8File(url) else { return false }
+        let canonical = canonicalFileURL(url)
+        return nativeDirtyFiles.contains(canonical)
     }
 
     private func updateModifiedEntry(_ entry: NvimModifiedBuffer, modified: Bool) {
@@ -2657,8 +2308,8 @@ class WorkspaceState: ObservableObject {
 
     func applyNvimHighlights(_ highlights: [String: NvimHighlightColors]) {
         let nextTheme = AppTheme.fromNvimHighlights(highlights)
-        if nextTheme != theme {
-            theme = nextTheme
+        if nextTheme != preferences.theme {
+            preferences.theme = nextTheme
         }
     }
 
@@ -2761,6 +2412,7 @@ class WorkspaceState: ObservableObject {
         nvimSaveTask = Task { @MainActor [weak self] in
             _ = await previous?.result
             guard let self else { return }
+            guard !Task.isCancelled, self.isNvimModeEnabled else { return }
             if nvimFailure != nil {
                 self.showToast("Restart Neovim to save")
                 return
@@ -2792,76 +2444,113 @@ class WorkspaceState: ObservableObject {
     }
 
     private func saveAllNativeFiles() {
-        var didSave = false
-        var hadError = false
         var skippedNonUTF8 = false
+        var targets: [(URL, String)] = []
+        targets.reserveCapacity(openFiles.count)
         for url in openFiles where isRegularFileURL(url) {
-            if isNonUTF8File(url) {
+            let canonical = canonicalFileURL(url)
+            if isNonUTF8File(canonical) {
                 skippedNonUTF8 = true
                 continue
             }
-            let normalized = url.standardizedFileURL
-            guard let content = openFileContents[normalized] ?? openFileContents[url] else { continue }
-            if let saved = savedFileContents[normalized] ?? savedFileContents[url],
-               saved == content {
-                continue
-            }
-            do {
-                try content.write(to: normalized, atomically: true, encoding: .utf8)
-                savedFileContents[normalized] = content
-                savedFileContents[url] = content
-                didSave = true
-            } catch {
-                appendErrorMessage("Failed to save \(displayPath(for: normalized)): \(error.localizedDescription)")
-                hadError = true
-            }
+            guard nativeDirtyFiles.contains(canonical) else { continue }
+            guard let content = openFileContents[canonical]
+                ?? (selectedFileURL == canonical ? editorText : nil)
+            else { continue }
+            targets.append((canonical, content))
         }
-        if didSave {
-            updateWindowTitle()
+        guard !targets.isEmpty else {
+            if skippedNonUTF8 {
+                showToast("Skipped non-UTF-8 files")
+            } else {
+                showToast("No changes to save")
+            }
+            return
         }
-        if hadError {
-            showToast("Save failed for some files")
-        } else if skippedNonUTF8 {
-            showToast("Skipped non-UTF-8 files")
-        } else if didSave {
-            showToast("Saved all")
-        } else {
-            showToast("No changes to save")
+
+        Task.detached(priority: .userInitiated) { [targets, skippedNonUTF8] in
+            var successes: [(URL, String)] = []
+            var failures: [(URL, Error)] = []
+            successes.reserveCapacity(targets.count)
+            for (url, content) in targets {
+                do {
+                    try content.write(to: url, atomically: true, encoding: .utf8)
+                    successes.append((url, content))
+                } catch {
+                    failures.append((url, error))
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for (url, content) in successes {
+                    self.savedFileContents[url] = content
+                    let current = self.openFileContents[url]
+                        ?? (self.selectedFileURL == url ? self.editorText : nil)
+                    if current == content {
+                        self.openFileContents[url] = content
+                        self.clearNativeDirty(url)
+                    }
+                }
+                if !successes.isEmpty {
+                    self.updateWindowTitle()
+                }
+                for (url, error) in failures {
+                    self.appendErrorMessage("Failed to save \(self.displayPath(for: url)): \(error.localizedDescription)")
+                }
+                if !failures.isEmpty {
+                    self.showToast("Save failed for some files")
+                } else if skippedNonUTF8 {
+                    self.showToast("Skipped non-UTF-8 files")
+                } else {
+                    self.showToast("Saved all")
+                }
+            }
         }
     }
 
     private func saveNativeFile(_ url: URL, notify: Bool) {
-        let normalized = url.standardizedFileURL
-        if isNonUTF8File(normalized) {
+        let canonical = canonicalFileURL(url)
+        if isNonUTF8File(canonical) {
             if notify {
                 showToast("Cannot save non-UTF-8 file")
             }
             return
         }
-        let content = openFileContents[normalized] ?? openFileContents[url]
-            ?? (selectedFileURL == normalized ? editorText : nil)
+        let content = openFileContents[canonical]
+            ?? (selectedFileURL == canonical ? editorText : nil)
         guard let content else { return }
-        if let saved = savedFileContents[normalized] ?? savedFileContents[url],
-           saved == content {
+        if !nativeDirtyFiles.contains(canonical) {
             if notify {
                 showToast("No changes to save")
             }
             return
         }
-        do {
-            try content.write(to: normalized, atomically: true, encoding: .utf8)
-            savedFileContents[normalized] = content
-            savedFileContents[url] = content
-            openFileContents[normalized] = content
-            updateWindowTitle()
-            if notify {
-                showToast("Saved")
-            }
-            snapshotOnSaveIfEnabled(url: normalized)
-        } catch {
-            appendErrorMessage("Failed to save \(displayPath(for: normalized)): \(error.localizedDescription)")
-            if notify {
-                showToast("Save failed")
+        Task.detached(priority: .userInitiated) { [content, canonical, notify] in
+            do {
+                try content.write(to: canonical, atomically: true, encoding: .utf8)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.savedFileContents[canonical] = content
+                    let current = self.openFileContents[canonical]
+                        ?? (self.selectedFileURL == canonical ? self.editorText : nil)
+                    if current == content {
+                        self.openFileContents[canonical] = content
+                        self.clearNativeDirty(canonical)
+                    }
+                    self.updateWindowTitle()
+                    if notify {
+                        self.showToast("Saved")
+                    }
+                    self.snapshotOnSaveIfEnabled(url: canonical)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.appendErrorMessage("Failed to save \(self.displayPath(for: canonical)): \(error.localizedDescription)")
+                    if notify {
+                        self.showToast("Save failed")
+                    }
+                }
             }
         }
     }
@@ -2875,12 +2564,12 @@ class WorkspaceState: ObservableObject {
     }
 
     private func openFileInNvim(_ url: URL, line: Int?, column: Int?) {
-        let normalizedURL = url.standardizedFileURL
-        Self.debugLog("[WorkspaceState] openFileInNvim: \(normalizedURL.path)")
-        if !openFiles.contains(normalizedURL) {
-            openFiles.append(normalizedURL)
+        let canonicalURL = canonicalFileURL(url)
+        Self.debugLog("[WorkspaceState] openFileInNvim: \(canonicalURL.path)")
+        if !openFiles.contains(canonicalURL) {
+            openFiles.append(canonicalURL)
         }
-        selectedFileURL = normalizedURL
+        selectedFileURL = canonicalURL
         currentLanguage = nil
         setEditorText("")
         Task { [weak self] in
@@ -2897,7 +2586,7 @@ class WorkspaceState: ObservableObject {
             }
             do {
                 Self.debugLog("[WorkspaceState] openFileInNvim: calling openFile")
-                try await controller.openFile(normalizedURL, line: line, column: column)
+                try await controller.openFile(canonicalURL, line: line, column: column)
                 Self.debugLog("[WorkspaceState] openFileInNvim: openFile completed OK")
             } catch {
                 Self.debugLog("[WorkspaceState] openFileInNvim error: \(error)")
@@ -2912,13 +2601,8 @@ class WorkspaceState: ObservableObject {
 
     private func enableNvimMode() {
         if rootDirectory == nil {
-            isNvimModeEnabled = true
-            nvimMode = .normal
-            openFolderPanel()
-            if rootDirectory == nil {
-                isNvimModeEnabled = false
-            }
-            return
+            guard let url = promptForFolderURL() else { return }
+            openDirectory(url, restoreSession: true)
         }
         isNvimModeEnabled = true
         nvimMode = .normal
@@ -2938,7 +2622,7 @@ class WorkspaceState: ObservableObject {
         isNvimModeEnabled = false
         clearNvimFailure()
         stopNvim()
-        theme = .default
+        preferences.theme = .default
         if let selectedFileURL, isRegularFileURL(selectedFileURL) {
             selectFile(selectedFileURL)
         }
@@ -2973,7 +2657,7 @@ class WorkspaceState: ObservableObject {
                 ghosttyApp: self.ghosttyApp,
                 workingDirectory: rootDirectory.path,
                 nvimPath: nvimPath,
-                optionAsMeta: optionAsMeta,
+                optionAsMeta: preferences.optionAsMeta,
                 logFilePath: logURL?.path
             )
             self.nvimController = controller
@@ -3001,6 +2685,8 @@ class WorkspaceState: ObservableObject {
     }
 
     private func stopNvim() {
+        nvimSaveTask?.cancel()
+        nvimSaveTask = nil
         nvimStartTask?.cancel()
         nvimStartTask = nil
         nvimSettingsSyncTask?.cancel()
@@ -3083,15 +2769,16 @@ class WorkspaceState: ObservableObject {
     }
 
     func openFileAtLocation(_ url: URL, line: Int, column: Int, length: Int = 0) {
+        let canonicalURL = canonicalFileURL(url)
         if isNvimModeEnabled {
-            if selectedFileURL != url {
+            if selectedFileURL != canonicalURL {
                 suppressSelectionSync = true
             }
-            openFileInNvim(url, line: line, column: column)
+            openFileInNvim(canonicalURL, line: line, column: column)
             return
         }
-        selectFile(url)
-        pendingSelection = EditorSelection(url: url, line: line, column: column, length: length)
+        selectFile(canonicalURL)
+        pendingSelection = EditorSelection(url: canonicalURL, line: line, column: column, length: length)
     }
 
     func closeSelectedTab() {
@@ -3254,16 +2941,16 @@ class WorkspaceState: ObservableObject {
         let displayPath = result.displayPath
         let lineNumber = match.lineNumber
         let fallbackLine = match.lineText
-        searchPreviewTask = Task { [weak self] in
-            let preview = await Task.detached(priority: .userInitiated) {
-                Self.buildSearchPreview(
-                    url: targetURL,
-                    displayPath: displayPath,
-                    lineNumber: lineNumber,
-                    fallbackLine: fallbackLine
-                )
-            }.value
-            await MainActor.run {
+        searchPreviewTask = Task.detached(priority: .userInitiated) {
+            if Task.isCancelled { return }
+            let preview = Self.buildSearchPreview(
+                url: targetURL,
+                displayPath: displayPath,
+                lineNumber: lineNumber,
+                fallbackLine: fallbackLine
+            )
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in
                 guard let self, token == self.searchPreviewToken else { return }
                 self.searchPreview = preview
             }
@@ -3370,14 +3057,17 @@ class WorkspaceState: ObservableObject {
         try? process.run()
     }
 
-    func openFolderPanel() {
+    private func promptForFolderURL() -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            requestOpenDirectory(url)
-        }
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    func openFolderPanel() {
+        guard let url = promptForFolderURL() else { return }
+        requestOpenDirectory(url)
     }
 
     func restoreLastWorkspaceIfNeeded() {
@@ -3487,9 +3177,11 @@ class WorkspaceState: ObservableObject {
                 let url = URL(string: "\(Self.terminalScheme)://\(terminalCounter)")!
                 terminalCounter += 1
                 let workingDirectory = item.workingDirectory ?? rootDirectory.path
-                let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory, optionAsMeta: optionAsMeta)
+                let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory, optionAsMeta: preferences.optionAsMeta)
                 view.onClose = { [weak self] in
-                    self?.closeFile(url)
+                    Task { @MainActor in
+                        self?.closeFile(url)
+                    }
                 }
                 terminalViews[url] = view
                 openFiles.append(url)
@@ -3584,7 +3276,16 @@ class WorkspaceState: ObservableObject {
     private func updateRecentEdit(for url: URL) {
         let normalized = url.standardizedFileURL
         recentEditTimestamps[normalized] = Date()
-        refreshRecentEditEntries()
+        scheduleRecentEditRefresh()
+    }
+
+    private func scheduleRecentEditRefresh() {
+        recentEditRefreshTask?.cancel()
+        recentEditRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.refreshRecentEditEntries()
+        }
     }
 
     private func refreshRecentEditEntries() {
@@ -3687,8 +3388,9 @@ class WorkspaceState: ObservableObject {
 
     func applyWindowAppearance() {
         guard let window = activeWindow() else { return }
-        if isWindowTransparencyEnabled {
-            let clamped = Self.clampWindowOpacity(windowOpacity)
+        let prefs = preferences
+        if prefs.isWindowTransparencyEnabled {
+            let clamped = EditorPreferences.clampWindowOpacity(prefs.windowOpacity)
             if window.alphaValue != clamped {
                 window.alphaValue = clamped
             }
@@ -3699,7 +3401,7 @@ class WorkspaceState: ObservableObject {
                 window.alphaValue = 1.0
             }
             window.isOpaque = true
-            window.backgroundColor = theme.background
+            window.backgroundColor = prefs.theme.background
         }
     }
 
@@ -3836,7 +3538,7 @@ class WorkspaceState: ObservableObject {
         guard !isNonUTF8File(url) else { return }
         autoSaveToken += 1
         let token = autoSaveToken
-        let targetURL = url.standardizedFileURL
+        let targetURL = canonicalFileURL(url)
         let interval = autoSaveInterval
         autoSaveTask?.cancel()
         autoSaveTask = Task { [weak self] in
@@ -4399,9 +4101,11 @@ class WorkspaceState: ObservableObject {
         let workingDirectory = cwd
             ?? rootDirectory?.path
             ?? FileManager.default.homeDirectoryForCurrentUser.path
-        let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory, optionAsMeta: optionAsMeta)
+        let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory, optionAsMeta: preferences.optionAsMeta)
         view.onClose = { [weak self] in
-            self?.closeFile(url)
+            Task { @MainActor in
+                self?.closeFile(url)
+            }
         }
         terminalViews[url] = view
         openFiles.append(url)
@@ -4661,9 +4365,14 @@ class WorkspaceState: ObservableObject {
                 shortcut: nil,
                 action: { [weak self] in
                     Task {
-                        try? await self?.jjService?.gitPush(allTracked: true)
-                        await self?.refreshJJStatus()
-                        self?.showToast("Pushed")
+                        guard let self, let jjService = self.jjService else { return }
+                        do {
+                            try await jjService.gitPush(allTracked: true)
+                            await self.refreshJJStatus()
+                            self.showToast("Pushed")
+                        } catch {
+                            self.appendErrorMessage("Push failed: \(error.localizedDescription)")
+                        }
                     }
                 }
             ),
@@ -4674,9 +4383,14 @@ class WorkspaceState: ObservableObject {
                 shortcut: nil,
                 action: { [weak self] in
                     Task {
-                        try? await self?.jjService?.gitFetch()
-                        await self?.refreshJJStatus()
-                        self?.showToast("Fetched")
+                        guard let self, let jjService = self.jjService else { return }
+                        do {
+                            try await jjService.gitFetch()
+                            await self.refreshJJStatus()
+                            self.showToast("Fetched")
+                        } catch {
+                            self.appendErrorMessage("Fetch failed: \(error.localizedDescription)")
+                        }
                     }
                 }
             ),
@@ -4726,55 +4440,53 @@ class WorkspaceState: ObservableObject {
         let rootPathPrefix = rootPath.hasSuffix("/") ? rootPath : "\(rootPath)/"
         let skipNames = Self.skipDirectoryNames
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
-        fileIndexTask = Task { [weak self] in
-            let entries = await Task.detached(priority: .utility) { [rootDirectory, rootPathPrefix, skipNames, keys] in
-                let fm = FileManager.default
-                var ignoreMatcher = Self.loadIgnoreMatcher(rootDirectory: rootDirectory)
-                if let gitPaths = Self.runGitListFiles(rootDirectory: rootDirectory) {
-                    var entries: [FileIndexEntry] = []
-                    entries.reserveCapacity(gitPaths.count)
-                    for path in gitPaths {
-                        if Self.isHiddenPath(path) { continue }
-                        let fileURL = rootDirectory.appendingPathComponent(path)
-                        var isDir: ObjCBool = false
-                        if fm.fileExists(atPath: fileURL.path, isDirectory: &isDir), isDir.boolValue {
-                            continue
-                        }
-                        entries.append(FileIndexEntry(url: fileURL, displayPath: path))
-                    }
-                    entries.sort { lhs, rhs in
-                        lhs.displayPath.localizedStandardCompare(rhs.displayPath) == .orderedAscending
-                    }
-                    return entries
-                }
-                guard let enumerator = fm.enumerator(
-                    at: rootDirectory,
-                    includingPropertiesForKeys: keys,
-                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
-                ) else {
-                    return [FileIndexEntry]()
-                }
+        fileIndexTask = Task.detached(priority: .utility) { [rootDirectory, rootPathPrefix, skipNames, keys] in
+            let fm = FileManager.default
+            var ignoreMatcher = Self.loadIgnoreMatcher(rootDirectory: rootDirectory)
+            if let gitPaths = Self.runGitListFiles(rootDirectory: rootDirectory) {
                 var entries: [FileIndexEntry] = []
-                while let url = enumerator.nextObject() as? URL {
-                    if Task.isCancelled { return entries }
-                    let values = try? url.resourceValues(forKeys: Set(keys))
-                    if values?.isDirectory == true {
-                        if skipNames.contains(url.lastPathComponent) {
-                            enumerator.skipDescendants()
-                        }
-                        let fullPath = url.path
-                        let displayPath: String
-                        if fullPath.hasPrefix(rootPathPrefix) {
-                            displayPath = String(fullPath.dropFirst(rootPathPrefix.count))
-                        } else {
-                            displayPath = url.lastPathComponent
-                        }
-                        if ignoreMatcher.shouldIgnore(path: displayPath, isDirectory: true) {
-                            continue
-                        }
+                entries.reserveCapacity(gitPaths.count)
+                for path in gitPaths {
+                    if Task.isCancelled { return }
+                    if Self.isHiddenPath(path) { continue }
+                    let fileURL = rootDirectory.appendingPathComponent(path)
+                    var isDir: ObjCBool = false
+                    if fm.fileExists(atPath: fileURL.path, isDirectory: &isDir), isDir.boolValue {
                         continue
                     }
-                    guard values?.isRegularFile == true else { continue }
+                    entries.append(FileIndexEntry(url: fileURL, displayPath: path))
+                }
+                entries.sort { lhs, rhs in
+                    lhs.displayPath.localizedStandardCompare(rhs.displayPath) == .orderedAscending
+                }
+                if Task.isCancelled { return }
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else { return }
+                    self.fileIndex = entries
+                    self.scheduleSearch()
+                }
+                return
+            }
+            guard let enumerator = fm.enumerator(
+                at: rootDirectory,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else {
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else { return }
+                    self.fileIndex = []
+                    self.scheduleSearch()
+                }
+                return
+            }
+            var entries: [FileIndexEntry] = []
+            while let url = enumerator.nextObject() as? URL {
+                if Task.isCancelled { return }
+                let values = try? url.resourceValues(forKeys: Set(keys))
+                if values?.isDirectory == true {
+                    if skipNames.contains(url.lastPathComponent) {
+                        enumerator.skipDescendants()
+                    }
                     let fullPath = url.path
                     let displayPath: String
                     if fullPath.hasPrefix(rootPathPrefix) {
@@ -4782,24 +4494,41 @@ class WorkspaceState: ObservableObject {
                     } else {
                         displayPath = url.lastPathComponent
                     }
-                    if ignoreMatcher.shouldIgnore(path: displayPath, isDirectory: false) {
+                    if ignoreMatcher.shouldIgnore(path: displayPath, isDirectory: true) {
+                        enumerator.skipDescendants()
                         continue
                     }
-                    entries.append(FileIndexEntry(url: url, displayPath: displayPath))
+                    continue
                 }
-                entries.sort { lhs, rhs in
-                    lhs.displayPath.localizedStandardCompare(rhs.displayPath) == .orderedAscending
+                guard values?.isRegularFile == true else { continue }
+                let fullPath = url.path
+                let displayPath: String
+                if fullPath.hasPrefix(rootPathPrefix) {
+                    displayPath = String(fullPath.dropFirst(rootPathPrefix.count))
+                } else {
+                    displayPath = url.lastPathComponent
                 }
-                return entries
-            }.value
-            guard let self, !Task.isCancelled else { return }
-            self.fileIndex = entries
-            self.scheduleSearch()
+                if ignoreMatcher.shouldIgnore(path: displayPath, isDirectory: false) {
+                    continue
+                }
+                entries.append(FileIndexEntry(url: url, displayPath: displayPath))
+            }
+            entries.sort { lhs, rhs in
+                lhs.displayPath.localizedStandardCompare(rhs.displayPath) == .orderedAscending
+            }
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.fileIndex = entries
+                self.scheduleSearch()
+            }
         }
     }
 
     private func scheduleSearch() {
         searchTask?.cancel()
+        searchToken += 1
+        let token = searchToken
         let rawQuery = fileSearchQuery
         let trimmedQuery = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedQuery.hasPrefix(">") {
@@ -4833,15 +4562,16 @@ class WorkspaceState: ObservableObject {
         let entries = fileIndex
         let recentEditScores = Self.buildRecencyScores(from: recentEditEntries.map(\.url), weight: Self.recencyEditWeight)
         let recentViewScores = Self.buildRecencyScores(from: recentFileEntries.map(\.url), weight: Self.recencyViewWeight)
-        searchTask = Task { [weak self] in
-            let results = await Task.detached(priority: .userInitiated) { [entries, query, recentEditScores, recentViewScores] in
-                if query.isEmpty {
-                    return Array(entries.prefix(Self.maxSearchResults))
-                }
+        searchTask = Task.detached(priority: .userInitiated) { [entries, query, recentEditScores, recentViewScores] in
+            if Task.isCancelled { return }
+            let results: [FileIndexEntry]
+            if query.isEmpty {
+                results = Array(entries.prefix(Self.maxSearchResults))
+            } else {
                 var scored: [(FileIndexEntry, Int)] = []
                 scored.reserveCapacity(entries.count / 2)
                 for entry in entries {
-                    if Task.isCancelled { return [FileIndexEntry]() }
+                    if Task.isCancelled { return }
                     if let score = Self.scoreFileMatch(
                         query: query,
                         entry: entry,
@@ -4855,18 +4585,23 @@ class WorkspaceState: ObservableObject {
                     if lhs.1 != rhs.1 { return lhs.1 < rhs.1 }
                     return lhs.0.displayPath.localizedStandardCompare(rhs.0.displayPath) == .orderedAscending
                 }
-                return scored.prefix(Self.maxSearchResults).map { $0.0 }
-            }.value
-            guard let self else { return }
-            let currentQuery = self.fileSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard currentQuery == query else { return }
-            self.fileSearchResults = results
-            self.paletteCommands = []
+                results = scored.prefix(Self.maxSearchResults).map { $0.0 }
+            }
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in
+                guard let self, token == self.searchToken else { return }
+                let currentQuery = self.fileSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard currentQuery == query else { return }
+                self.fileSearchResults = results
+                self.paletteCommands = []
+            }
         }
     }
 
     private func scheduleSearchInFiles() {
         searchInFilesTask?.cancel()
+        searchInFilesToken += 1
+        let token = searchInFilesToken
         let rawQuery = searchQuery
         let trimmedQuery = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let rootDirectory else {
@@ -4885,32 +4620,32 @@ class WorkspaceState: ObservableObject {
         isSearchInProgress = true
         searchErrorMessage = nil
         clearSearchPreview()
-        searchInFilesToken += 1
-        let token = searchInFilesToken
         let rootPath = rootDirectory.path
-        searchInFilesTask = Task { [weak self] in
+        searchInFilesTask = Task.detached(priority: .utility) {
             do {
                 try await Task.sleep(nanoseconds: 250_000_000)
             } catch {
-                guard let self else { return }
-                guard token == self.searchInFilesToken else { return }
-                self.isSearchInProgress = false
+                await MainActor.run { [weak self] in
+                    guard let self, token == self.searchInFilesToken else { return }
+                    self.isSearchInProgress = false
+                }
                 return
             }
-            guard let self, !Task.isCancelled else { return }
-            let result = await Task.detached(priority: .utility) {
-                await Self.runRipgrep(query: trimmedQuery, rootPath: rootPath)
-            }.value
-            guard token == self.searchInFilesToken else { return }
-            switch result {
-            case .success(let results):
-                self.searchResults = results
-                self.searchErrorMessage = nil
-            case .failure(let message):
-                self.searchResults = []
-                self.searchErrorMessage = message
+            if Task.isCancelled { return }
+            let result = await Self.runRipgrep(query: trimmedQuery, rootPath: rootPath)
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in
+                guard let self, token == self.searchInFilesToken else { return }
+                switch result {
+                case .success(let results):
+                    self.searchResults = results
+                    self.searchErrorMessage = nil
+                case .failure(let message):
+                    self.searchResults = []
+                    self.searchErrorMessage = message
+                }
+                self.isSearchInProgress = false
             }
-            self.isSearchInProgress = false
         }
     }
 
@@ -4938,9 +4673,11 @@ class WorkspaceState: ObservableObject {
         searchInFilesToken += 1
         let token = searchInFilesToken
         let rootPath = rootDirectory.path
-        let result = await Task.detached(priority: .utility) {
+        let task = Task.detached(priority: .utility) {
             await Self.runRipgrep(query: trimmedQuery, rootPath: rootPath)
-        }.value
+        }
+        searchInFilesTask = task
+        let result = await task.value
         guard token == searchInFilesToken else { return }
         switch result {
         case .success(let results):
@@ -5391,10 +5128,9 @@ class WorkspaceState: ObservableObject {
         process.arguments = ["git", "-C", rootDirectory.path, "ls-files", "-co", "--exclude-standard", "-z"]
 
         let outputPipe = Pipe()
-        let errorPipe = Pipe()
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = outputPipe
-        process.standardError = errorPipe
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -5403,7 +5139,6 @@ class WorkspaceState: ObservableObject {
         }
 
         let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        _ = errorPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
 
@@ -5865,22 +5600,35 @@ class WorkspaceState: ObservableObject {
         activeSessionDiff = snapshot
     }
 
-    func openDiffTab(title: String, summary: String?, diff: String) {
-        let id = UUID().uuidString
-        guard let url = URL(string: "\(Self.diffScheme)://\(id)") else { return }
+    private func diffTabURL(category: String, identifier: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = Self.diffScheme
+        components.host = category
+        let path = identifier.hasPrefix("/") ? identifier : "/\(identifier)"
+        components.path = path
+        return components.url
+    }
+
+    private func openDiffTab(id: URL, title: String, summary: String?, diff: String) {
         let tab = DiffTab(
-            id: url,
+            id: id,
             title: title,
             summary: summary ?? "",
             diff: diff
         )
-        diffTabs[url] = tab
-        if !openFiles.contains(url) {
-            openFiles.append(url)
+        diffTabs[id] = tab
+        if !openFiles.contains(id) {
+            openFiles.append(id)
         }
-        selectedFileURL = url
+        selectedFileURL = id
         currentLanguage = nil
         setEditorText("")
+    }
+
+    func openDiffTab(title: String, summary: String?, diff: String) {
+        let id = UUID().uuidString
+        guard let url = URL(string: "\(Self.diffScheme)://\(id)") else { return }
+        openDiffTab(id: url, title: title, summary: summary, diff: diff)
     }
 
     @discardableResult
@@ -5909,6 +5657,7 @@ class WorkspaceState: ObservableObject {
             view.uiDelegate = nil
             view.stopLoading()
         }
+        webviewTitleObservers[url]?.invalidate()
         webviewViews.removeValue(forKey: url)
         webviewTitleObservers.removeValue(forKey: url)
         webviewTabs.removeValue(forKey: url)
@@ -6672,6 +6421,11 @@ extension WorkspaceState {
         return output
     }
 
+    private struct SnapshotOperationMetadata: Codable {
+        let restoreOperationId: String?
+        let snapshotOperationId: String?
+    }
+
     // MARK: - JJ Version Control Integration
 
     func setupJJService(for url: URL) {
@@ -6701,6 +6455,18 @@ extension WorkspaceState {
                 await refreshJJStatus()
                 detectedCommitStyle = await CommitStyleDetector.detectFromRepo(jjService: service)
             }
+        } else {
+            jjSnapshotStore = nil
+            agentOrchestrator = nil
+            jjModifiedFiles = []
+            jjChangeLog = []
+            jjBookmarks = []
+            jjOperations = []
+            jjConflicts = []
+            jjSnapshots = []
+            detectedCommitStyle = .freeform
+            isJJPanelVisible = false
+            isAgentDashboardVisible = false
         }
     }
 
@@ -6752,6 +6518,82 @@ extension WorkspaceState {
         }
     }
 
+    private func snapshotOperationMetadata() async -> String? {
+        guard let jjService, jjService.isAvailable else { return nil }
+        do {
+            let ops = try await jjService.opLog(limit: 2)
+            let metadata = SnapshotOperationMetadata(
+                restoreOperationId: ops.count > 1 ? ops[1].operationId : nil,
+                snapshotOperationId: ops.first?.operationId
+            )
+            let data = try JSONEncoder().encode(metadata)
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    private func decodeSnapshotMetadata(_ snapshot: Snapshot) -> SnapshotOperationMetadata? {
+        guard let text = snapshot.metadata,
+              let data = text.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(SnapshotOperationMetadata.self, from: data)
+    }
+
+    private func resolveRestoreOperationId(for snapshot: Snapshot) async -> String? {
+        guard let jjService, jjService.isAvailable else { return nil }
+        let metadata = decodeSnapshotMetadata(snapshot)
+        if let restoreId = metadata?.restoreOperationId {
+            return restoreId
+        }
+        do {
+            let ops = try await jjService.opLog(limit: 200)
+            if let resolved = resolveRestoreOperationId(
+                from: ops,
+                snapshotOpId: metadata?.snapshotOperationId,
+                snapshotDate: snapshot.createdAt
+            ) {
+                return resolved
+            }
+            if ops.count == 200 {
+                let fullOps = try await jjService.opLog()
+                return resolveRestoreOperationId(
+                    from: fullOps,
+                    snapshotOpId: metadata?.snapshotOperationId,
+                    snapshotDate: snapshot.createdAt
+                )
+            }
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
+    private func resolveRestoreOperationId(
+        from ops: [JJOperation],
+        snapshotOpId: String?,
+        snapshotDate: Date
+    ) -> String? {
+        if let snapshotOpId,
+           let index = ops.firstIndex(where: { $0.operationId == snapshotOpId }) {
+            let restoreIndex = index + 1
+            guard restoreIndex < ops.count else { return nil }
+            return ops[restoreIndex].operationId
+        }
+        return resolveRestoreOperationId(from: ops, snapshotDate: snapshotDate)
+    }
+
+    private func resolveRestoreOperationId(from ops: [JJOperation], snapshotDate: Date) -> String? {
+        guard !ops.isEmpty else { return nil }
+        for (index, op) in ops.enumerated() {
+            if op.timestamp <= snapshotDate {
+                let restoreIndex = index + 1
+                guard restoreIndex < ops.count else { return nil }
+                return ops[restoreIndex].operationId
+            }
+        }
+        return nil
+    }
+
     // MARK: - Auto-Snapshot
 
     private func autoSnapshotAfterTurn(turnId: String) {
@@ -6761,6 +6603,7 @@ extension WorkspaceState {
                 let summary = lastAssistantMessageSummary()
                 try await jjService.describe(message: "ai: \(summary)")
                 let newChange = try await jjService.newChange()
+                let metadata = await snapshotOperationMetadata()
 
                 // Record in SQLite
                 let chatSession = activeChatId
@@ -6771,7 +6614,8 @@ extension WorkspaceState {
                     description: "ai: \(summary)",
                     snapshotType: .aiChange,
                     chatSessionId: chatSession,
-                    chatMessageIndex: messageIndex
+                    chatMessageIndex: messageIndex,
+                    metadata: metadata
                 )
 
                 // Write git note if enabled
@@ -6808,12 +6652,14 @@ extension WorkspaceState {
                 let filename = url.lastPathComponent
                 try await jjService.describe(message: "save: \(filename)")
                 let newChange = try await jjService.newChange()
+                let metadata = await snapshotOperationMetadata()
 
                 try? jjSnapshotStore?.recordSnapshot(
                     changeId: newChange.changeId,
                     commitId: newChange.commitId,
                     description: "save: \(filename)",
-                    snapshotType: .userSave
+                    snapshotType: .userSave,
+                    metadata: metadata
                 )
 
                 await refreshJJStatus()
@@ -6848,12 +6694,14 @@ extension WorkspaceState {
             let description = "commit: \(files.count) file(s) changed"
             try await jjService.describe(message: description)
             _ = try await jjService.newChange()
+            let metadata = await snapshotOperationMetadata()
 
             try? jjSnapshotStore?.recordSnapshot(
                 changeId: "",
                 commitId: nil,
                 description: description,
-                snapshotType: .manualCommit
+                snapshotType: .manualCommit,
+                metadata: metadata
             )
 
             await refreshJJStatus()
@@ -6892,18 +6740,13 @@ extension WorkspaceState {
         Task {
             do {
                 let diff = try await jjService.diff(paths: [file.path])
-                let url = URL(string: "smithers://diff/jj/\(file.path)")!
-                let tab = DiffTab(
-                    id: url,
-                    title: file.path.split(separator: "/").last.map(String.init) ?? file.path,
-                    summary: "\(file.status.rawValue) \(file.path)",
-                    diff: diff
-                )
-                diffTabs[url] = tab
-                if !openFiles.contains(url) {
-                    openFiles.append(url)
+                let title = file.path.split(separator: "/").last.map(String.init) ?? file.path
+                let summary = "\(file.status.rawValue) \(file.path)"
+                if let url = diffTabURL(category: "jj-file", identifier: file.path) {
+                    openDiffTab(id: url, title: title, summary: summary, diff: diff)
+                } else {
+                    openDiffTab(title: title, summary: summary, diff: diff)
                 }
-                selectedFileURL = url
             } catch {
                 appendErrorMessage("Failed to get diff: \(error.localizedDescription)")
             }
@@ -6914,18 +6757,13 @@ extension WorkspaceState {
         guard let jjService else { return }
         do {
             let diff = try await jjService.diff(revision: change.changeId)
-            let url = URL(string: "smithers://diff/jj/change/\(change.shortChangeId)")!
-            let tab = DiffTab(
-                id: url,
-                title: change.shortChangeId,
-                summary: change.firstLine,
-                diff: diff
-            )
-            diffTabs[url] = tab
-            if !openFiles.contains(url) {
-                openFiles.append(url)
+            let title = change.shortChangeId
+            let summary = change.firstLine
+            if let url = diffTabURL(category: "jj-change", identifier: change.shortChangeId) {
+                openDiffTab(id: url, title: title, summary: summary, diff: diff)
+            } else {
+                openDiffTab(title: title, summary: summary, diff: diff)
             }
-            selectedFileURL = url
         } catch {
             appendErrorMessage("Failed to get diff: \(error.localizedDescription)")
         }
@@ -6933,7 +6771,7 @@ extension WorkspaceState {
 
     func openFileFromJJPanel(_ path: String) {
         guard let rootDirectory else { return }
-        let url = rootDirectory.appendingPathComponent(path)
+        let url = canonicalFileURL(rootDirectory.appendingPathComponent(path))
         if !openFiles.contains(url) {
             openFiles.append(url)
         }
@@ -6948,7 +6786,7 @@ extension WorkspaceState {
             await refreshJJStatus()
             // Reload the file if it's currently open
             if let rootDirectory {
-                let url = rootDirectory.appendingPathComponent(path)
+                let url = canonicalFileURL(rootDirectory.appendingPathComponent(path))
                 if openFiles.contains(url) {
                     reloadFileContent(url)
                 }
@@ -6960,10 +6798,12 @@ extension WorkspaceState {
     }
 
     private func reloadFileContent(_ url: URL) {
-        if let content = try? String(contentsOf: url, encoding: .utf8) {
-            savedFileContents[url] = content
-            openFileContents[url] = content
-            if selectedFileURL == url {
+        let canonicalURL = canonicalFileURL(url)
+        if let content = try? String(contentsOf: canonicalURL, encoding: .utf8) {
+            savedFileContents[canonicalURL] = content
+            openFileContents[canonicalURL] = content
+            clearNativeDirty(canonicalURL)
+            if selectedFileURL == canonicalURL {
                 suppressEditorTextUpdate = true
                 editorText = content
                 suppressEditorTextUpdate = false
@@ -7001,18 +6841,13 @@ extension WorkspaceState {
         guard let jjService else { return }
         do {
             let diff = try await jjService.diff(revision: snapshot.changeId)
-            let url = URL(string: "smithers://diff/snapshot/\(snapshot.changeId)")!
-            let tab = DiffTab(
-                id: url,
-                title: "Snapshot \(String(snapshot.changeId.prefix(8)))",
-                summary: snapshot.description,
-                diff: diff
-            )
-            diffTabs[url] = tab
-            if !openFiles.contains(url) {
-                openFiles.append(url)
+            let title = "Snapshot \(String(snapshot.changeId.prefix(8)))"
+            let summary = snapshot.description
+            if let url = diffTabURL(category: "snapshot", identifier: snapshot.changeId) {
+                openDiffTab(id: url, title: title, summary: summary, diff: diff)
+            } else {
+                openDiffTab(title: title, summary: summary, diff: diff)
             }
-            selectedFileURL = url
         } catch {
             appendErrorMessage("Failed to get snapshot diff: \(error.localizedDescription)")
         }
@@ -7044,18 +6879,13 @@ extension WorkspaceState {
         guard let jjService else { return }
         do {
             let diff = try await jjService.diff(revision: agent.changeId)
-            let url = URL(string: "smithers://diff/agent/\(agent.id)")!
-            let tab = DiffTab(
-                id: url,
-                title: "Agent: \(agent.id)",
-                summary: agent.task,
-                diff: diff
-            )
-            diffTabs[url] = tab
-            if !openFiles.contains(url) {
-                openFiles.append(url)
+            let title = "Agent: \(agent.id)"
+            let summary = agent.task
+            if let url = diffTabURL(category: "agent", identifier: agent.id) {
+                openDiffTab(id: url, title: title, summary: summary, diff: diff)
+            } else {
+                openDiffTab(title: title, summary: summary, diff: diff)
             }
-            selectedFileURL = url
         } catch {
             appendErrorMessage("Failed to get agent diff: \(error.localizedDescription)")
         }
@@ -7063,27 +6893,44 @@ extension WorkspaceState {
 
     // MARK: - Revert Chat Message (JJ)
 
-    func canRevertJJMessage(_ message: ChatMessage) -> Bool {
-        guard let jjService, jjService.isAvailable else { return false }
-        guard message.role == .assistant else { return false }
-        guard message.turnId != nil else { return false }
-        guard !isTurnInProgress else { return false }
+    func jjRevertActionInfo(_ message: ChatMessage) -> JJRevertActionInfo? {
+        guard jjService?.isAvailable == true else { return nil }
+        guard message.role == .assistant else { return nil }
+        guard message.turnId != nil else { return nil }
+        guard !isTurnInProgress else { return nil }
         // Check if there's a snapshot for this message
         if let store = jjSnapshotStore,
            let sessionId = activeChatId as String?,
            let idx = chatMessages.firstIndex(where: { $0.id == message.id }) {
             let snapshot = try? store.snapshotForMessage(sessionId: sessionId, messageIndex: idx)
-            return snapshot != nil
+            if let snapshot {
+                let latest = try? store.latestSnapshot()
+                let isLatest = latest == nil || latest?.id == snapshot.id || latest?.changeId == snapshot.changeId
+                return JJRevertActionInfo(snapshot: snapshot, isLatest: isLatest)
+            }
         }
-        return false
+        return nil
+    }
+
+    func canRevertJJMessage(_ message: ChatMessage) -> Bool {
+        jjRevertActionInfo(message) != nil
     }
 
     func revertJJMessage(_ message: ChatMessage) async {
+        guard let info = jjRevertActionInfo(message) else { return }
+        await revertJJSnapshot(info.snapshot, isLatest: info.isLatest)
+    }
+
+    func revertJJSnapshot(_ snapshot: Snapshot, isLatest: Bool) async {
         guard let jjService, jjService.isAvailable else { return }
         do {
-            try await jjService.undo()
+            guard let opId = await resolveRestoreOperationId(for: snapshot) else {
+                appendErrorMessage("Unable to locate operation for snapshot.")
+                return
+            }
+            try await jjService.opRestore(operationId: opId)
             await refreshJJStatus()
-            showToast("Reverted agent changes")
+            showToast(isLatest ? "Reverted" : "Reverted to snapshot")
         } catch {
             appendErrorMessage("Revert failed: \(error.localizedDescription)")
         }

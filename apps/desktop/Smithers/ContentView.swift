@@ -10,6 +10,10 @@ struct EditorViewState: Equatable {
     var selectionRange: NSRange
 }
 
+private final class EditorViewStateStore {
+    var states: [URL: EditorViewState] = [:]
+}
+
 struct EditorScrollMetrics: Equatable {
     var contentHeight: CGFloat = 1
     var viewportHeight: CGFloat = 1
@@ -469,7 +473,7 @@ struct CodeEditor: NSViewRepresentable {
         private var ghostAnchor: Int?
         private var completionWorkItem: DispatchWorkItem?
         private var completionTask: Task<Void, Never>?
-        private var completionRequestID: Int = 0
+        private var completionGeneration: Int = 0
         private var suppressNextCompletionRequest = false
         private var suppressSelectionCancel = false
         private var isApplyingCompletion = false
@@ -1172,11 +1176,13 @@ struct CodeEditor: NSViewRepresentable {
             completionWorkItem = nil
         }
 
-        private func cancelInFlightCompletion() {
+        private func cancelInFlightCompletion(advanceGeneration: Bool = true) {
             completionTask?.cancel()
             completionTask = nil
             parent.cancelCompletionRequest?()
-            completionRequestID += 1
+            if advanceGeneration {
+                completionGeneration += 1
+            }
         }
 
         private func scheduleCompletion(textView: STTextView) {
@@ -1186,17 +1192,22 @@ struct CodeEditor: NSViewRepresentable {
             let selection = textView.selectedRange()
             guard selection.length == 0 else { return }
             completionWorkItem?.cancel()
-            completionRequestID += 1
-            let requestID = completionRequestID
-            let workItem = DispatchWorkItem { [weak self, weak textView] in
-                guard let self, let textView else { return }
-                self.requestCompletion(textView: textView, requestID: requestID)
+            completionGeneration += 1
+            let generation = completionGeneration
+            var workItem: DispatchWorkItem?
+            workItem = DispatchWorkItem { [weak self, weak textView] in
+                guard let self, let textView, let workItem, !workItem.isCancelled else { return }
+                guard self.completionGeneration == generation else { return }
+                self.requestCompletion(textView: textView, generation: generation)
             }
             completionWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + completionDebounceInterval, execute: workItem)
+            if let workItem {
+                DispatchQueue.main.asyncAfter(deadline: .now() + completionDebounceInterval, execute: workItem)
+            }
         }
 
-        private func requestCompletion(textView: STTextView, requestID: Int) {
+        private func requestCompletion(textView: STTextView, generation: Int) {
+            guard completionGeneration == generation else { return }
             guard let provider = parent.completionProvider else { return }
             let selection = textView.selectedRange()
             guard selection.length == 0 else { return }
@@ -1212,20 +1223,19 @@ struct CodeEditor: NSViewRepresentable {
                 fileURL: parent.fileURL,
                 languageName: parent.language?.name
             )
-            cancelInFlightCompletion()
-            completionRequestID = requestID
+            cancelInFlightCompletion(advanceGeneration: false)
             let anchor = cursor
             completionTask = Task { [weak self, weak textView] in
                 guard let self, let textView else { return }
                 let result = await provider(request, { partial in
                     Task { @MainActor in
-                        guard self.completionRequestID == requestID else { return }
+                        guard self.completionGeneration == generation else { return }
                         guard !partial.isEmpty else { return }
                         self.setGhostText(partial, anchor: anchor, textView: textView)
                     }
                 })
                 guard !Task.isCancelled else { return }
-                guard self.completionRequestID == requestID else { return }
+                guard self.completionGeneration == generation else { return }
                 if let result, !result.isEmpty, !self.isSuggestionRedundant(result, textView: textView, anchor: anchor) {
                     self.setGhostText(result, anchor: anchor, textView: textView)
                 } else {
@@ -1461,7 +1471,7 @@ struct ContentView: View {
     @ObservedObject var workspace: WorkspaceState
     @ObservedObject var tmuxKeyHandler: TmuxKeyHandler
     @State private var focusedPane: FocusedPane? = .editor
-    @State private var editorViewStates: [URL: EditorViewState] = [:]
+    @State private var editorViewStateStore = EditorViewStateStore()
     @State private var editorScrollMetrics = EditorScrollMetrics()
 #if DEBUG
     @StateObject private var performanceMonitor = PerformanceMonitor.shared
@@ -1488,7 +1498,7 @@ struct ContentView: View {
                     // Sidebar mode tabs
                     if workspace.jjService?.isAvailable == true {
                         SidebarModeBar(workspace: workspace)
-                        Divider().background(workspace.theme.dividerColor)
+                        Divider().background(workspace.preferences.theme.dividerColor)
                     }
 
                     if workspace.isJJPanelVisible {
@@ -1500,8 +1510,8 @@ struct ContentView: View {
                     }
                 }
                     .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 400)
-                    .overlay(SidebarResizeHandle(theme: workspace.theme), alignment: .trailing)
-                    .overlay(FocusRing(isActive: focusedPane == .sidebar, theme: workspace.theme))
+                    .overlay(SidebarResizeHandle(theme: workspace.preferences.theme), alignment: .trailing)
+                    .overlay(FocusRing(isActive: focusedPane == .sidebar, theme: workspace.preferences.theme))
                     .contentShape(Rectangle())
                     .onTapGesture {
                         focusedPane = .sidebar
@@ -1512,14 +1522,14 @@ struct ContentView: View {
                     if !workspace.openFiles.isEmpty {
                         TabBar(workspace: workspace)
                         Divider()
-                            .background(workspace.theme.dividerColor)
+                            .background(workspace.preferences.theme.dividerColor)
                     }
 
                     if let selectedURL = workspace.selectedFileURL,
                        workspace.isRegularFileURL(selectedURL) {
-                        BreadcrumbBar(path: workspace.displayPath(for: selectedURL), theme: workspace.theme)
+                        BreadcrumbBar(path: workspace.displayPath(for: selectedURL), theme: workspace.preferences.theme)
                         Divider()
-                            .background(workspace.theme.dividerColor)
+                            .background(workspace.preferences.theme.dividerColor)
                     }
 
                     Group {
@@ -1536,8 +1546,8 @@ struct ContentView: View {
                                     pane(
                                         TerminalTabView(
                                             view: view,
-                                            scrollbarMode: workspace.scrollbarVisibilityMode,
-                                            theme: workspace.theme
+                                            scrollbarMode: workspace.preferences.scrollbarVisibilityMode,
+                                            theme: workspace.preferences.theme
                                         ),
                                         pane: .terminal
                                     )
@@ -1551,7 +1561,7 @@ struct ContentView: View {
                                             title: tab.title,
                                             summary: tab.summary,
                                             diff: tab.diff,
-                                            theme: workspace.theme
+                                            theme: workspace.preferences.theme
                                         ),
                                         pane: .diff
                                     )
@@ -1573,7 +1583,7 @@ struct ContentView: View {
                                         pane(
                                             NvimRecoveryView(
                                                 failure: failure,
-                                                theme: workspace.theme,
+                                                theme: workspace.preferences.theme,
                                                 onRestart: { workspace.restartNvim() },
                                                 onDisable: { workspace.toggleNvimMode() },
                                                 onRevealReport: { url in
@@ -1587,9 +1597,9 @@ struct ContentView: View {
                                             ZStack {
                                                 TerminalTabView(
                                                     view: nvimView,
-                                                    scrollbarMode: workspace.scrollbarVisibilityMode,
+                                                    scrollbarMode: workspace.preferences.scrollbarVisibilityMode,
                                                     scrollbarMetrics: nvimScrollbarMetrics,
-                                                    theme: workspace.theme,
+                                                    theme: workspace.preferences.theme,
                                                     onScrollToOffset: { offset in
                                                         let topLine = Int(offset.rounded()) + 1
                                                         workspace.scrollNvimToTopLine(topLine)
@@ -1616,7 +1626,6 @@ struct ContentView: View {
                             pane(emptyEditor, pane: .editor)
                         }
                     }
-                    .id(selectionKey)
                     .transition(.opacity)
                     .animation(.easeInOut(duration: 0.1), value: selectionKey)
 
@@ -1625,7 +1634,7 @@ struct ContentView: View {
 
                 if workspace.isShortcutsPanelVisible {
                     Divider()
-                        .background(workspace.theme.dividerColor)
+                        .background(workspace.preferences.theme.dividerColor)
                     KeyboardShortcutsPanel(workspace: workspace, tmuxKeyHandler: tmuxKeyHandler)
                         .frame(width: shortcutsPanelWidth)
                         .frame(maxHeight: .infinity)
@@ -1650,7 +1659,7 @@ struct ContentView: View {
             if let toast = workspace.toastMessage {
                 VStack {
                     Spacer()
-                    ToastView(message: toast, theme: workspace.theme)
+                    ToastView(message: toast, theme: workspace.preferences.theme)
                         .padding(.bottom, toastBottomPadding)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1662,7 +1671,7 @@ struct ContentView: View {
             if let overlay = workspace.activeOverlay {
                 WorkspaceOverlayView(
                     overlay: overlay,
-                    theme: workspace.theme,
+                    theme: workspace.preferences.theme,
                     onDismiss: { workspace.dismissOverlay(id: overlay.id) }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: overlay.position.alignment)
@@ -1677,9 +1686,9 @@ struct ContentView: View {
                     WindowProgressBar(
                         progress: workspace.progressValue,
                         height: max(CGFloat(1), workspace.progressBarHeight),
-                        fillColor: Color(nsColor: workspace.progressBarFillColor ?? workspace.theme.accent),
+                        fillColor: Color(nsColor: workspace.progressBarFillColor ?? workspace.preferences.theme.accent),
                         trackColor: Color(nsColor: workspace.progressBarTrackColor
-                            ?? workspace.theme.divider.withAlphaComponent(0.35))
+                            ?? workspace.preferences.theme.divider.withAlphaComponent(0.35))
                     )
                     Spacer(minLength: 0)
                 }
@@ -1690,8 +1699,8 @@ struct ContentView: View {
             }
 
 #if DEBUG
-            if workspace.isPerformanceOverlayEnabled {
-                PerformanceOverlayView(monitor: performanceMonitor, theme: workspace.theme)
+            if workspace.preferences.isPerformanceOverlayEnabled {
+                PerformanceOverlayView(monitor: performanceMonitor, theme: workspace.preferences.theme)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(.top, 10)
                     .padding(.trailing, 12)
@@ -1700,7 +1709,7 @@ struct ContentView: View {
                     .zIndex(5)
             }
 
-            if workspace.isPerformanceOverlayEnabled || workspace.isPerformanceLoggingEnabled {
+            if workspace.preferences.isPerformanceOverlayEnabled || workspace.preferences.isPerformanceLoggingEnabled {
                 PerformanceFrameTicker(monitor: performanceMonitor)
                     .frame(width: 0, height: 0)
                     .allowsHitTesting(false)
@@ -1734,13 +1743,13 @@ struct ContentView: View {
                 SkillDetailView(skill: skill, workspace: workspace)
             }
         }
-        .background(workspace.theme.backgroundColor)
+        .background(workspace.preferences.theme.backgroundColor)
     }
 
     private func pane<Content: View>(_ content: Content, pane: FocusedPane) -> some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(FocusRing(isActive: focusedPane == pane, theme: workspace.theme))
+            .overlay(FocusRing(isActive: focusedPane == pane, theme: workspace.preferences.theme))
             .contentShape(Rectangle())
             .onTapGesture {
                 focusedPane = pane
@@ -1766,28 +1775,28 @@ struct ContentView: View {
                     text: $workspace.editorText,
                     selectionRequest: $workspace.pendingSelection,
                     scrollMetrics: $editorScrollMetrics,
-                    fontSize: $workspace.editorFontSize,
+                    fontSize: $workspace.preferences.editorFontSize,
                     language: workspace.currentLanguage,
                     fileURL: workspace.selectedFileURL,
-                    theme: workspace.theme,
-                    font: workspace.editorFont,
-                    lineSpacing: workspace.editorLineSpacing,
-                    characterSpacing: workspace.editorCharacterSpacing,
-                    ligaturesEnabled: workspace.editorLigaturesEnabled,
-                    scrollbarMode: workspace.scrollbarVisibilityMode,
-                    showsLineNumbers: true,
-                    highlightsCurrentLine: true,
-                    showsIndentGuides: true,
-                    minFontSize: WorkspaceState.minEditorFontSize,
-                    maxFontSize: WorkspaceState.maxEditorFontSize,
+                    theme: workspace.preferences.theme,
+                    font: workspace.preferences.editorFont,
+                    lineSpacing: workspace.preferences.editorLineSpacing,
+                    characterSpacing: workspace.preferences.editorCharacterSpacing,
+                    ligaturesEnabled: workspace.preferences.editorLigaturesEnabled,
+                    scrollbarMode: workspace.preferences.scrollbarVisibilityMode,
+                    showsLineNumbers: workspace.preferences.showLineNumbers,
+                    highlightsCurrentLine: workspace.preferences.highlightCurrentLine,
+                    showsIndentGuides: workspace.preferences.showIndentGuides,
+                    minFontSize: EditorPreferences.minEditorFontSize,
+                    maxFontSize: EditorPreferences.maxEditorFontSize,
                     saveViewState: { url, scrollOrigin, selection in
-                        editorViewStates[url] = EditorViewState(
+                        editorViewStateStore.states[url] = EditorViewState(
                             scrollOrigin: scrollOrigin,
                             selectionRange: selection
                         )
                     },
                     loadViewState: { url in
-                        editorViewStates[url]
+                        editorViewStateStore.states[url]
                     },
                     onCursorMove: { line, column in
                         workspace.cursorLine = line
@@ -1806,14 +1815,14 @@ struct ContentView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if workspace.showMinimap {
-                    MinimapView(metrics: editorScrollMetrics, theme: workspace.theme)
+                if workspace.preferences.showMinimap {
+                    MinimapView(metrics: editorScrollMetrics, theme: workspace.preferences.theme)
                         .frame(width: 70)
                 }
             }
 
             if workspace.isEditorLoading {
-                EditorSkeleton(theme: workspace.theme)
+                EditorSkeleton(theme: workspace.preferences.theme)
                     .transition(.opacity)
                     .allowsHitTesting(false)
             }
@@ -1838,7 +1847,7 @@ struct ContentView: View {
             .padding(.top, 6)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(workspace.theme.backgroundColor)
+        .background(workspace.preferences.theme.backgroundColor)
     }
 
     private var nvimPlaceholder: some View {
@@ -1850,7 +1859,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(workspace.theme.backgroundColor)
+        .background(workspace.preferences.theme.backgroundColor)
     }
 
     private func emptyStateShortcut(_ title: String, _ keys: String) -> some View {
@@ -2023,7 +2032,7 @@ private struct StatusBar: View {
     @State private var showSkillsPopover = false
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         let selectedURL = workspace.selectedFileURL
         let isRegular = selectedURL.map(workspace.isRegularFileURL) ?? false
         let viewLabel: String = {
@@ -2240,7 +2249,7 @@ struct TabBar: View {
     @State private var dragTarget: URL?
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(spacing: 6) {
@@ -2430,7 +2439,7 @@ struct SidebarModeBar: View {
     @ObservedObject var workspace: WorkspaceState
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         HStack(spacing: 0) {
             sidebarButton(
                 icon: "doc.text",

@@ -4,7 +4,7 @@ struct FileTreeSidebar: View {
     @ObservedObject var workspace: WorkspaceState
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         let topInset: CGFloat = 38
         Group {
             if workspace.fileTree.isEmpty {
@@ -97,7 +97,7 @@ struct FileTreeRow: View {
                 }
                 .padding(.vertical, 2)
                 .contentShape(Rectangle())
-                .background(isHovered ? workspace.theme.selectionBackgroundColor.opacity(0.3) : Color.clear)
+                .background(isHovered ? workspace.preferences.theme.selectionBackgroundColor.opacity(0.3) : Color.clear)
                 .onTapGesture {
                     if !isExpanded {
                         workspace.expandFolder(item)
@@ -122,8 +122,8 @@ struct FileTreeRow: View {
     private var fileLabel: some View {
         let isModified = workspace.isFileModified(item.id)
         let dotColor = workspace.selectedFileURL == item.id
-            ? workspace.theme.tabSelectedForegroundColor
-            : workspace.theme.accentColor
+            ? workspace.preferences.theme.tabSelectedForegroundColor
+            : workspace.preferences.theme.accentColor
 
         return HStack(spacing: 6) {
             Image(systemName: iconForFile(item.name))
@@ -185,7 +185,7 @@ struct FileTreeRow: View {
                     IndentGuides(
                         level: level,
                         indent: indentWidth,
-                        color: workspace.theme.dividerColor.opacity(0.35)
+                        color: workspace.preferences.theme.dividerColor.opacity(0.35)
                     )
                 }
             }

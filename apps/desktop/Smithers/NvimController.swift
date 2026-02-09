@@ -769,7 +769,7 @@ final class NvimController {
         case "write":
             guard let name = payload["name"]?.stringValue else { return }
             if let url = urlFromBufferName(name) {
-                workspace?.refreshFileTreeForNewFile(url)
+                workspace?.handleNvimBufferWrite(url: url)
             }
         default:
             let listedValue = payload["listed"]

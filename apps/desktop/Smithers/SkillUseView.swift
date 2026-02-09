@@ -5,7 +5,7 @@ struct SkillUseView: View {
     @State private var filter: String = ""
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         VStack(spacing: 0) {
             header(theme: theme)
             Divider()

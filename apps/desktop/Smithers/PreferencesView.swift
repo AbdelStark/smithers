@@ -51,28 +51,28 @@ struct PreferencesView: View {
             }
 
             Section("Window") {
-                Toggle("Transparent window", isOn: $workspace.isWindowTransparencyEnabled)
+                Toggle("Transparent window", isOn: $workspace.preferences.isWindowTransparencyEnabled)
                 HStack {
                     Text("Opacity")
                     Spacer()
                     Slider(
-                        value: $workspace.windowOpacity,
-                        in: WorkspaceState.windowOpacityRange,
+                        value: $workspace.preferences.windowOpacity,
+                        in: EditorPreferences.windowOpacityRange,
                         step: 0.05
                     )
                     .frame(maxWidth: 140)
-                    Text("\(Int((workspace.windowOpacity * 100).rounded()))%")
+                    Text("\(Int((workspace.preferences.windowOpacity * 100).rounded()))%")
                         .font(.system(size: Typography.s, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                .disabled(!workspace.isWindowTransparencyEnabled)
+                .disabled(!workspace.preferences.isWindowTransparencyEnabled)
             }
 
 #if DEBUG
             Section("Developer") {
-                Toggle("Show Performance Overlay", isOn: $workspace.isPerformanceOverlayEnabled)
-                Toggle("Log Performance Metrics", isOn: $workspace.isPerformanceLoggingEnabled)
-                if workspace.isPerformanceLoggingEnabled,
+                Toggle("Show Performance Overlay", isOn: $workspace.preferences.isPerformanceOverlayEnabled)
+                Toggle("Log Performance Metrics", isOn: $workspace.preferences.isPerformanceLoggingEnabled)
+                if workspace.preferences.isPerformanceLoggingEnabled,
                    let logURL = PerformanceMonitor.shared.logFileURL {
                     Button("Reveal Performance Log") {
                         workspace.revealInFinder(logURL)
@@ -91,8 +91,8 @@ struct PreferencesView: View {
     private var editorPane: some View {
         Form {
             Section("Font") {
-                Picker("Font", selection: $workspace.editorFontName) {
-                    ForEach(workspace.availableEditorFonts, id: \.self) { name in
+                Picker("Font", selection: $workspace.preferences.editorFontName) {
+                    ForEach(workspace.preferences.availableEditorFonts, id: \.self) { name in
                         Text(displayName(for: name))
                             .tag(name)
                     }
@@ -101,24 +101,24 @@ struct PreferencesView: View {
                     Text("Size")
                     Spacer()
                     Stepper(
-                        value: $workspace.editorFontSize,
-                        in: WorkspaceState.minEditorFontSize...WorkspaceState.maxEditorFontSize,
+                        value: $workspace.preferences.editorFontSize,
+                        in: EditorPreferences.minEditorFontSize...EditorPreferences.maxEditorFontSize,
                         step: 1
                     ) {
-                        Text("\(Int(workspace.editorFontSize)) pt")
+                        Text("\(Int(workspace.preferences.editorFontSize)) pt")
                             .font(.system(size: Typography.base, weight: .semibold))
                     }
                 }
-                Toggle("Enable ligatures", isOn: $workspace.editorLigaturesEnabled)
+                Toggle("Enable ligatures", isOn: $workspace.preferences.editorLigaturesEnabled)
                 HStack {
                     Text("Line spacing")
                     Spacer()
                     Stepper(
-                        value: $workspace.editorLineSpacing,
-                        in: WorkspaceState.editorLineSpacingRange,
+                        value: $workspace.preferences.editorLineSpacing,
+                        in: EditorPreferences.editorLineSpacingRange,
                         step: 0.5
                     ) {
-                        Text(String(format: "%.1f pt", workspace.editorLineSpacing))
+                        Text(String(format: "%.1f pt", workspace.preferences.editorLineSpacing))
                             .font(.system(size: Typography.base, weight: .semibold))
                     }
                 }
@@ -126,25 +126,25 @@ struct PreferencesView: View {
                     Text("Character spacing")
                     Spacer()
                     Stepper(
-                        value: $workspace.editorCharacterSpacing,
-                        in: WorkspaceState.editorCharacterSpacingRange,
+                        value: $workspace.preferences.editorCharacterSpacing,
+                        in: EditorPreferences.editorCharacterSpacingRange,
                         step: 0.5
                     ) {
-                        Text(String(format: "%.1f pt", workspace.editorCharacterSpacing))
+                        Text(String(format: "%.1f pt", workspace.preferences.editorCharacterSpacing))
                             .font(.system(size: Typography.base, weight: .semibold))
                     }
                 }
             }
 
             Section("Appearance") {
-                Toggle("Show line numbers", isOn: $workspace.showLineNumbers)
-                Toggle("Highlight current line", isOn: $workspace.highlightCurrentLine)
-                Toggle("Show indent guides", isOn: $workspace.showIndentGuides)
-                Toggle("Show minimap", isOn: $workspace.showMinimap)
+                Toggle("Show line numbers", isOn: $workspace.preferences.showLineNumbers)
+                Toggle("Highlight current line", isOn: $workspace.preferences.highlightCurrentLine)
+                Toggle("Show indent guides", isOn: $workspace.preferences.showIndentGuides)
+                Toggle("Show minimap", isOn: $workspace.preferences.showMinimap)
             }
 
             Section("Scrollbar") {
-                Picker("Visibility", selection: $workspace.scrollbarVisibilityMode) {
+                Picker("Visibility", selection: $workspace.preferences.scrollbarVisibilityMode) {
                     ForEach(ScrollbarVisibilityMode.allCases) { mode in
                         Text(mode.label)
                             .tag(mode)
@@ -170,7 +170,7 @@ struct PreferencesView: View {
                         "Fill",
                         selection: progressColorBinding(
                             $workspace.progressBarFillColor,
-                            fallback: workspace.theme.accent
+                            fallback: workspace.preferences.theme.accent
                         ),
                         supportsOpacity: true
                     )
@@ -184,7 +184,7 @@ struct PreferencesView: View {
                         "Track",
                         selection: progressColorBinding(
                             $workspace.progressBarTrackColor,
-                            fallback: workspace.theme.divider.withAlphaComponent(0.35)
+                            fallback: workspace.preferences.theme.divider.withAlphaComponent(0.35)
                         ),
                         supportsOpacity: true
                     )
@@ -201,26 +201,26 @@ struct PreferencesView: View {
         Form {
             Section("Neovim") {
                 HStack(spacing: 8) {
-                    TextField("/path/to/nvim", text: $workspace.preferredNvimPath)
+                    TextField("/path/to/nvim", text: $workspace.preferences.preferredNvimPath)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: Typography.base, design: .monospaced))
                     Button("Choose...") {
-                        workspace.chooseNvimPath()
+                        workspace.preferences.chooseNvimPath()
                     }
                 }
                 HStack {
-                    Text(workspace.nvimPathStatusMessage)
+                    Text(workspace.preferences.nvimPathStatusMessage)
                         .font(.system(size: Typography.s))
-                        .foregroundStyle(workspace.nvimPathStatusIsError ? Color.red : Color.secondary)
+                        .foregroundStyle(workspace.preferences.nvimPathStatusIsError ? Color.red : Color.secondary)
                     Spacer()
                     Button("Use Default") {
-                        workspace.clearNvimPath()
+                        workspace.preferences.clearNvimPath()
                     }
                 }
             }
 
             Section("Keys") {
-                Picker("Option as Meta", selection: $workspace.optionAsMeta) {
+                Picker("Option as Meta", selection: $workspace.preferences.optionAsMeta) {
                     ForEach(OptionAsMeta.allCases) { option in
                         Text(option.label)
                             .tag(option)
@@ -230,48 +230,48 @@ struct PreferencesView: View {
             }
 
             Section("Floating Windows") {
-                Toggle("Blur background", isOn: $workspace.nvimFloatingBlurEnabled)
+                Toggle("Blur background", isOn: $workspace.preferences.nvimFloatingBlurEnabled)
                 HStack {
                     Text("Blur Radius")
                     Spacer()
                     Slider(
-                        value: $workspace.nvimFloatingBlurRadius,
-                        in: WorkspaceState.floatingBlurRadiusRange,
+                        value: $workspace.preferences.nvimFloatingBlurRadius,
+                        in: EditorPreferences.floatingBlurRadiusRange,
                         step: 1
                     )
                     .frame(maxWidth: 140)
-                    Text("\(Int(workspace.nvimFloatingBlurRadius)) pt")
+                    Text("\(Int(workspace.preferences.nvimFloatingBlurRadius)) pt")
                         .font(.system(size: Typography.s, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                .disabled(!workspace.nvimFloatingBlurEnabled)
+                .disabled(!workspace.preferences.nvimFloatingBlurEnabled)
 
-                Toggle("Shadow", isOn: $workspace.nvimFloatingShadowEnabled)
+                Toggle("Shadow", isOn: $workspace.preferences.nvimFloatingShadowEnabled)
                 HStack {
                     Text("Shadow Radius")
                     Spacer()
                     Slider(
-                        value: $workspace.nvimFloatingShadowRadius,
-                        in: WorkspaceState.floatingShadowRadiusRange,
+                        value: $workspace.preferences.nvimFloatingShadowRadius,
+                        in: EditorPreferences.floatingShadowRadiusRange,
                         step: 1
                     )
                     .frame(maxWidth: 140)
-                    Text("\(Int(workspace.nvimFloatingShadowRadius)) pt")
+                    Text("\(Int(workspace.preferences.nvimFloatingShadowRadius)) pt")
                         .font(.system(size: Typography.s, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                .disabled(!workspace.nvimFloatingShadowEnabled)
+                .disabled(!workspace.preferences.nvimFloatingShadowEnabled)
 
                 HStack {
                     Text("Corner Radius")
                     Spacer()
                     Slider(
-                        value: $workspace.nvimFloatingCornerRadius,
-                        in: WorkspaceState.floatingCornerRadiusRange,
+                        value: $workspace.preferences.nvimFloatingCornerRadius,
+                        in: EditorPreferences.floatingCornerRadiusRange,
                         step: 1
                     )
                     .frame(maxWidth: 140)
-                    Text("\(Int(workspace.nvimFloatingCornerRadius)) pt")
+                    Text("\(Int(workspace.preferences.nvimFloatingCornerRadius)) pt")
                         .font(.system(size: Typography.s, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
