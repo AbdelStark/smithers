@@ -7,17 +7,13 @@ private struct ShortcutContextState: Hashable {
     let nvimEnabled: Bool
     let nvimMode: NvimModeKind
 
-    var primaryCategory: ShortcutCategory? {
-        if prefixActive { return .tabs }
-        if commandPaletteOpen { return .commandPalette }
-        if searchOpen { return .search }
-        if nvimEnabled { return .neovim }
-        return nil
-    }
-
     var activeCategories: Set<ShortcutCategory> {
-        guard let primaryCategory else { return [] }
-        return [primaryCategory]
+        var set: Set<ShortcutCategory> = []
+        if prefixActive { set.insert(.tabs) }
+        if commandPaletteOpen { set.insert(.commandPalette) }
+        if searchOpen { set.insert(.search) }
+        if nvimEnabled { set.insert(.neovim) }
+        return set
     }
 
     var animationKey: String {
@@ -46,7 +42,7 @@ struct KeyboardShortcutsPanel: View {
     @State private var prefixPulse = false
 
     var body: some View {
-        let theme = workspace.theme
+        let theme = workspace.preferences.theme
         let context = ShortcutContextState(
             prefixActive: tmuxKeyHandler.prefixActive,
             commandPaletteOpen: workspace.isCommandPalettePresented,
@@ -102,7 +98,7 @@ struct KeyboardShortcutsPanel: View {
             case .always:
                 return true
             case .prefixActive:
-                return true
+                return context.prefixActive
             case .commandPaletteOpen:
                 return context.commandPaletteOpen
             case .searchOpen:
