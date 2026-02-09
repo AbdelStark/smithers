@@ -186,13 +186,14 @@ final class GhosttyApp {
         location: ghostty_clipboard_e,
         state: UnsafeMutableRawPointer?
     ) {
-        guard let view = GhosttyTerminalView.from(userdata: userdata),
-              let surface = view.surface else { return }
-
-        let pasteboard = NSPasteboard.general
-        let value = pasteboard.string(forType: .string) ?? ""
-        value.withCString { ptr in
-            ghostty_surface_complete_clipboard_request(surface, ptr, state, false)
+        guard let view = GhosttyTerminalView.from(userdata: userdata) else { return }
+        DispatchQueue.main.async { [weak view] in
+            guard let view, let surface = view.surface else { return }
+            let pasteboard = NSPasteboard.general
+            let value = pasteboard.string(forType: .string) ?? ""
+            value.withCString { ptr in
+                ghostty_surface_complete_clipboard_request(surface, ptr, state, false)
+            }
         }
     }
 
@@ -202,11 +203,13 @@ final class GhosttyApp {
         state: UnsafeMutableRawPointer?,
         request: ghostty_clipboard_request_e
     ) {
-        guard let view = GhosttyTerminalView.from(userdata: userdata),
-              let surface = view.surface else { return }
-        let value = string.map { String(cString: $0) } ?? ""
-        value.withCString { ptr in
-            ghostty_surface_complete_clipboard_request(surface, ptr, state, true)
+        let value = string.flatMap { String(validatingUTF8: $0) } ?? ""
+        guard let view = GhosttyTerminalView.from(userdata: userdata) else { return }
+        DispatchQueue.main.async { [weak view] in
+            guard let view, let surface = view.surface else { return }
+            value.withCString { ptr in
+                ghostty_surface_complete_clipboard_request(surface, ptr, state, true)
+            }
         }
     }
 
@@ -222,20 +225,24 @@ final class GhosttyApp {
         var text: String?
         for item in buffer {
             if let mime = item.mime, let data = item.data {
-                let mimeStr = String(cString: mime)
+                guard let mimeStr = String(validatingUTF8: mime) else { continue }
                 if mimeStr == "text/plain" || mimeStr == "text/plain;charset=utf-8" {
-                    text = String(cString: data)
+                    text = String(validatingUTF8: data)
                     break
                 }
             }
         }
         if text == nil, let first = buffer.first, let data = first.data {
-            text = String(cString: data)
+            text = String(validatingUTF8: data)
         }
         guard let text else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        guard let view = GhosttyTerminalView.from(userdata: userdata) else { return }
+        DispatchQueue.main.async { [weak view] in
+            guard view != nil else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
     }
 
     private static func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive: Bool) {
