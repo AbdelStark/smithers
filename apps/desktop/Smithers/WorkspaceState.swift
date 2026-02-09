@@ -104,19 +104,11 @@ class WorkspaceState: ObservableObject {
         }
     }
     @Published var currentLanguage: SupportedLanguage?
-    @Published var chatMessages: [ChatMessage] = [
-        ChatMessage(
-            role: .assistant,
-            kind: .starterPrompt(
-                title: "Talk to me to get started!",
-                suggestions: [
-                    "What tools and capabilities do you have?",
-                    "Help me fix a bug?",
-                    "Help me build a ralph script"
-                ]
-            )
-        )
-    ]
+    @Published var chatMessages: [ChatMessage] = WorkspaceState.initialChatMessages() {
+        didSet {
+            scheduleChatHistoryPersist()
+        }
+    }
     @Published var theme: AppTheme = .default
     @Published var activeDiffPreview: DiffPreview?
     @Published var activeSessionDiff: SessionDiffSnapshot?
@@ -127,7 +119,7 @@ class WorkspaceState: ObservableObject {
     @Published var isCommandPalettePresented: Bool = false
     @Published var isNvimModeEnabled: Bool = false
     @Published var isAutoSaveEnabled: Bool = UserDefaults.standard.bool(
-        forKey: Self.autoSaveEnabledKey
+        forKey: WorkspaceState.autoSaveEnabledKey
     ) {
         didSet {
             UserDefaults.standard.set(isAutoSaveEnabled, forKey: Self.autoSaveEnabledKey)
@@ -139,8 +131,8 @@ class WorkspaceState: ObservableObject {
         }
     }
     @Published var autoSaveInterval: TimeInterval = {
-        let value = UserDefaults.standard.double(forKey: Self.autoSaveIntervalKey)
-        return value > 0 ? value : Self.defaultAutoSaveInterval
+        let value = UserDefaults.standard.double(forKey: WorkspaceState.autoSaveIntervalKey)
+        return value > 0 ? value : WorkspaceState.defaultAutoSaveInterval
     }() {
         didSet {
             UserDefaults.standard.set(autoSaveInterval, forKey: Self.autoSaveIntervalKey)
@@ -173,9 +165,12 @@ class WorkspaceState: ObservableObject {
     private var toastToken: Int = 0
     private var autoSaveTask: Task<Void, Never>?
     private var autoSaveToken: Int = 0
+    private var chatHistoryPersistTask: Task<Void, Never>?
+    private var nvimSaveTask: Task<Void, Never>?
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
+    private var suppressChatHistoryPersistence = false
     private static let chatURL = URL(string: "smithers-chat://current")!
     private static let terminalScheme = "smithers-terminal"
     private static let openFileScheme = "smithers-open-file"
@@ -187,7 +182,6 @@ class WorkspaceState: ObservableObject {
     private static let autoSaveEnabledKey = "smithers.autoSaveEnabled"
     private static let autoSaveIntervalKey = "smithers.autoSaveInterval"
     private static let defaultAutoSaveInterval: TimeInterval = 5
-    private static let autoSaveIntervals: [TimeInterval] = [5, 10, 30]
     private var terminalCounter = 0
     private let ghosttyApp = GhosttyApp.shared
     private var nvimController: NvimController?
@@ -212,7 +206,44 @@ class WorkspaceState: ObservableObject {
         refreshRecentEntries()
     }
 
+    func persistChatHistory() {
+        persistChatHistoryNow()
+    }
+
+    private func loadChatHistory(for rootDirectory: URL) {
+        suppressChatHistoryPersistence = true
+        defer { suppressChatHistoryPersistence = false }
+        if let messages = ChatHistoryStore.loadHistory(for: rootDirectory), !messages.isEmpty {
+            chatMessages = messages
+        } else {
+            chatMessages = Self.initialChatMessages()
+        }
+    }
+
+    private func scheduleChatHistoryPersist() {
+        guard !suppressChatHistoryPersistence else { return }
+        guard let rootDirectory else { return }
+        chatHistoryPersistTask?.cancel()
+        let root = rootDirectory
+        chatHistoryPersistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let messages = self.chatMessages
+            Task.detached(priority: .utility) {
+                ChatHistoryStore.saveHistory(messages, for: root)
+            }
+        }
+    }
+
+    private func persistChatHistoryNow() {
+        chatHistoryPersistTask?.cancel()
+        chatHistoryPersistTask = nil
+        guard let rootDirectory else { return }
+        ChatHistoryStore.saveHistory(chatMessages, for: rootDirectory)
+    }
+
     func openDirectory(_ url: URL) {
+        persistChatHistoryNow()
         let shouldRestartNvim = isNvimModeEnabled
         stopNvim()
         stopCodexService()
@@ -237,6 +268,7 @@ class WorkspaceState: ObservableObject {
         turnDiffOrder = []
         streamingTurnDiffs = [:]
         diffTabs = [:]
+        loadChatHistory(for: url)
         openChat()
         rebuildFileIndex()
         startCodexService(cwd: url.path)
@@ -762,18 +794,9 @@ class WorkspaceState: ObservableObject {
 
     func saveAllFiles() {
         if isNvimModeEnabled {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                do {
-                    let controller = try await self.ensureNvimStarted()
-                    try await controller.saveAll()
-                    let buffers = try await controller.listModifiedBuffers()
-                    self.setNvimModifiedBuffers(buffers)
-                    self.showToast("Saved all")
-                } catch {
-                    self.appendErrorMessage("Save failed: \(error.localizedDescription)")
-                    self.showToast("Save failed")
-                }
+            enqueueNvimSave { controller in
+                try await controller.saveAll()
+                return "Saved all"
             }
             return
         }
@@ -783,22 +806,31 @@ class WorkspaceState: ObservableObject {
     func saveCurrentFile() {
         guard let selectedFileURL, isRegularFileURL(selectedFileURL) else { return }
         if isNvimModeEnabled {
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                do {
-                    let controller = try await self.ensureNvimStarted()
-                    try await controller.saveCurrent()
-                    let buffers = try await controller.listModifiedBuffers()
-                    self.setNvimModifiedBuffers(buffers)
-                    self.showToast("Saved")
-                } catch {
-                    self.appendErrorMessage("Save failed: \(error.localizedDescription)")
-                    self.showToast("Save failed")
-                }
+            enqueueNvimSave { controller in
+                try await controller.saveCurrent()
+                return "Saved"
             }
             return
         }
-        saveNativeFile(selectedFileURL, showToast: true)
+        saveNativeFile(selectedFileURL, notify: true)
+    }
+
+    private func enqueueNvimSave(_ operation: @escaping (NvimController) async throws -> String) {
+        let previous = nvimSaveTask
+        nvimSaveTask = Task { @MainActor [weak self] in
+            _ = await previous?.result
+            guard let self else { return }
+            do {
+                let controller = try await self.ensureNvimStarted()
+                let message = try await operation(controller)
+                let buffers = try await controller.listModifiedBuffers()
+                self.setNvimModifiedBuffers(buffers)
+                self.showToast(message)
+            } catch {
+                self.appendErrorMessage("Save failed: \(error.localizedDescription)")
+                self.showToast("Save failed")
+            }
+        }
     }
 
     private func saveAllNativeFiles() {
@@ -833,14 +865,14 @@ class WorkspaceState: ObservableObject {
         }
     }
 
-    private func saveNativeFile(_ url: URL, showToast: Bool) {
+    private func saveNativeFile(_ url: URL, notify: Bool) {
         let normalized = url.standardizedFileURL
         let content = openFileContents[normalized] ?? openFileContents[url]
             ?? (selectedFileURL == normalized ? editorText : nil)
         guard let content else { return }
         if let saved = savedFileContents[normalized] ?? savedFileContents[url],
            saved == content {
-            if showToast {
+            if notify {
                 showToast("No changes to save")
             }
             return
@@ -851,12 +883,12 @@ class WorkspaceState: ObservableObject {
             savedFileContents[url] = content
             openFileContents[normalized] = content
             updateWindowTitle()
-            if showToast {
+            if notify {
                 showToast("Saved")
             }
         } catch {
             appendErrorMessage("Failed to save \(displayPath(for: normalized)): \(error.localizedDescription)")
-            if showToast {
+            if notify {
                 showToast("Save failed")
             }
         }
@@ -1147,7 +1179,7 @@ class WorkspaceState: ObservableObject {
         }
         recentFolderEntries = recentFolderURLs.compactMap { url in
             guard fileExists(at: url, isDirectory: true) else { return nil }
-            return RecentFolderEntry(id: url, url: url, displayPath: url.path)
+            return RecentFolderEntry(id: url, url: url, displayPath: Self.abbreviatedPath(url.path))
         }
     }
 
@@ -1220,10 +1252,17 @@ class WorkspaceState: ObservableObject {
         if window.title != title {
             window.title = title
         }
-        window.representedURL = context.representedURL
-        window.isDocumentEdited = context.isEdited
+        if window.representedURL != context.representedURL {
+            window.representedURL = context.representedURL
+        }
+        if window.isDocumentEdited != context.isEdited {
+            window.isDocumentEdited = context.isEdited
+        }
         if let button = window.standardWindowButton(.documentIconButton) {
-            button.isHidden = context.representedURL == nil
+            let shouldHide = context.representedURL == nil
+            if button.isHidden != shouldHide {
+                button.isHidden = shouldHide
+            }
             button.toolTip = context.representedURL?.path
         }
     }
@@ -1274,17 +1313,28 @@ class WorkspaceState: ObservableObject {
         return URL(fileURLWithPath: trimmed).standardizedFileURL
     }
 
+    private var windowRecoveryTask: Task<Void, Never>?
+
     private func maybeHideWindowForNvimStart() {
         guard !windowHiddenForNvim else { return }
         guard nvimController == nil && nvimStartTask == nil else { return }
         guard let window = activeWindow() else { return }
         windowHiddenForNvim = true
         window.orderOut(nil)
+        windowRecoveryTask?.cancel()
+        windowRecoveryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, self.windowHiddenForNvim else { return }
+            Self.debugLog("[WorkspaceState] window recovery timeout — forcing show")
+            self.showWindowAfterNvimReady()
+        }
     }
 
     private func showWindowAfterNvimReady() {
         guard windowHiddenForNvim else { return }
         windowHiddenForNvim = false
+        windowRecoveryTask?.cancel()
+        windowRecoveryTask = nil
         guard let window = activeWindow() else { return }
         window.makeKeyAndOrderFront(nil)
     }
@@ -1306,9 +1356,8 @@ class WorkspaceState: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             await MainActor.run {
                 guard token == self.autoSaveToken else { return }
-                guard self.selectedFileURL?.standardizedFileURL == targetURL else { return }
                 guard self.isNativeFileModified(targetURL) else { return }
-                self.saveNativeFile(targetURL, showToast: false)
+                self.saveNativeFile(targetURL, notify: false)
             }
         }
     }
@@ -1327,9 +1376,37 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    private static func abbreviatedPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let prefix = home.hasSuffix("/") ? home : "\(home)/"
+        if path == home {
+            return "~"
+        }
+        if path.hasPrefix(prefix) {
+            return "~/" + String(path.dropFirst(prefix.count))
+        }
+        return path
+    }
+
     private static func formatInterval(_ interval: TimeInterval) -> String {
         let seconds = Int(interval.rounded())
         return "\(seconds)s"
+    }
+
+    private static func initialChatMessages() -> [ChatMessage] {
+        [
+            ChatMessage(
+                role: .assistant,
+                kind: .starterPrompt(
+                    title: "Talk to me to get started!",
+                    suggestions: [
+                        "What tools and capabilities do you have?",
+                        "Help me fix a bug?",
+                        "Help me build a ralph script"
+                    ]
+                )
+            )
+        ]
     }
 
     func sendChatMessage() {
@@ -1462,7 +1539,7 @@ class WorkspaceState: ObservableObject {
             ),
             PaletteCommand(
                 id: "open-chat",
-                title: "Open Chat",
+                title: "Open Chat History",
                 icon: "bubble.left.and.bubble.right",
                 action: { [weak self] in
                     self?.openChat()
