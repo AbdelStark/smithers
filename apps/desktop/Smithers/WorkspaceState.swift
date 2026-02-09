@@ -92,12 +92,36 @@ class WorkspaceState: ObservableObject {
         case allow(force: Bool)
     }
 
+    private enum SessionItemKind: String, Codable {
+        case file
+        case terminal
+        case chat
+    }
+
+    private struct SessionItem: Codable {
+        let kind: SessionItemKind
+        let path: String?
+        let workingDirectory: String?
+    }
+
+    private struct SessionState: Codable {
+        let rootPath: String
+        let openItems: [SessionItem]
+        let selectedIndex: Int?
+        var lastAccessed: Date?
+    }
+
     @Published var rootDirectory: URL?
     @Published var fileTree: [FileItem] = []
-    @Published var openFiles: [URL] = []
+    @Published var openFiles: [URL] = [] {
+        didSet {
+            persistSessionStateIfNeeded()
+        }
+    }
     @Published var selectedFileURL: URL? {
         didSet {
             updateWindowTitle()
+            persistSessionStateIfNeeded()
         }
     }
     @Published var terminalViews: [URL: GhosttyTerminalView] = [:]
@@ -205,6 +229,7 @@ class WorkspaceState: ObservableObject {
     private var suppressSelectionSync = false
     private var closeGuardsBypassed = false
     private var windowHiddenForNvim = false
+    private var suppressSessionPersistence = false
     private var recentFileURLs: [URL] = []
     private var recentFolderURLs: [URL] = []
     private var recentEditTimestamps: [URL: Date] = [:]
@@ -214,6 +239,7 @@ class WorkspaceState: ObservableObject {
     private var autoSaveToken: Int = 0
     private var chatHistoryPersistTask: Task<Void, Never>?
     private var nvimSaveTask: Task<Void, Never>?
+    private var sessionPersistTask: Task<Void, Never>?
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
@@ -223,11 +249,13 @@ class WorkspaceState: ObservableObject {
     private static let openFileScheme = "smithers-open-file"
     private static let diffScheme = "smithers-diff"
     private static let lastWorkspaceKey = "smithers.lastWorkspacePath"
+    private static let sessionStateKey = "smithers.sessionStateByRoot"
     private static let recentFilesKey = "smithers.recentFiles"
     private static let recentFoldersKey = "smithers.recentFolders"
     private static let maxRecentItems = 10
     private static let maxRecentEdits = 10
     private static let maxSearchMatches = 1000
+    private static let maxSessionEntries = 20
     private static let autoSaveEnabledKey = "smithers.autoSaveEnabled"
     private static let autoSaveIntervalKey = "smithers.autoSaveInterval"
     private static let defaultAutoSaveInterval: TimeInterval = 5
@@ -291,15 +319,17 @@ class WorkspaceState: ObservableObject {
         ChatHistoryStore.saveHistory(chatMessages, for: rootDirectory)
     }
 
-    func openDirectory(_ url: URL) {
+    func openDirectory(_ url: URL, restoreSession: Bool = false) {
+        persistSessionStateIfNeeded()
         persistChatHistoryNow()
         let shouldRestartNvim = isNvimModeEnabled
         stopNvim()
         stopCodexService()
         closeAllTerminals()
         saveLastWorkspace(url)
-        addRecentFolder(url)
         rootDirectory = url
+        addRecentFolder(url)
+        suppressSessionPersistence = true
         fileTree = FileItem.loadTree(at: url)
         openFiles = []
         selectedFileURL = nil
@@ -314,6 +344,8 @@ class WorkspaceState: ObservableObject {
         searchResults = []
         searchErrorMessage = nil
         isSearchPresented = false
+        recentEditTimestamps = [:]
+        recentEditEntries = []
         activeDiffPreview = nil
         activeSessionDiff = nil
         sessionDiffSnapshot = nil
@@ -322,9 +354,17 @@ class WorkspaceState: ObservableObject {
         streamingTurnDiffs = [:]
         diffTabs = [:]
         loadChatHistory(for: url)
-        openChat()
+        if restoreSession {
+            if !restoreSessionStateIfAvailable() {
+                openChat()
+            }
+        } else {
+            openChat()
+        }
         rebuildFileIndex()
         startCodexService(cwd: url.path)
+        suppressSessionPersistence = false
+        persistSessionStateIfNeeded()
         if shouldRestartNvim {
             Task { [weak self] in
                 guard let self else { return }
@@ -1259,11 +1299,159 @@ class WorkspaceState: ObservableObject {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
               isDir.boolValue else { return }
-        openDirectory(url)
+        openDirectory(url, restoreSession: true)
     }
 
     private func saveLastWorkspace(_ url: URL) {
         UserDefaults.standard.set(url.path, forKey: Self.lastWorkspaceKey)
+    }
+
+    func persistSessionState() {
+        persistSessionStateNow()
+    }
+
+    private func persistSessionStateNow() {
+        sessionPersistTask?.cancel()
+        sessionPersistTask = nil
+        guard let rootDirectory else { return }
+        var session = buildSessionState(rootPath: rootDirectory.path)
+        session.lastAccessed = Date()
+        var map = Self.loadSessionStateMap()
+        map[rootDirectory.path] = session
+        Self.saveSessionStateMap(map)
+    }
+
+    private func persistSessionStateIfNeeded(force: Bool = false) {
+        guard force || !suppressSessionPersistence else { return }
+        guard rootDirectory != nil else { return }
+        if force {
+            persistSessionStateNow()
+            return
+        }
+        // Debounce: coalesce rapid changes into a single write after 1.5s
+        sessionPersistTask?.cancel()
+        sessionPersistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.persistSessionStateNow()
+        }
+    }
+
+    private func buildSessionState(rootPath: String) -> SessionState {
+        var items: [SessionItem] = []
+        var selectedIndex: Int?
+        items.reserveCapacity(openFiles.count)
+        for url in openFiles {
+            if isDiffURL(url) {
+                continue
+            }
+            if isChatURL(url) {
+                items.append(SessionItem(kind: .chat, path: nil, workingDirectory: nil))
+            } else if isTerminalURL(url) {
+                let workingDirectory = terminalViews[url]?.pwd ?? rootDirectory?.path
+                items.append(SessionItem(kind: .terminal, path: nil, workingDirectory: workingDirectory))
+            } else {
+                items.append(SessionItem(kind: .file, path: url.standardizedFileURL.path, workingDirectory: nil))
+            }
+            if url == selectedFileURL {
+                selectedIndex = items.count - 1
+            }
+        }
+        return SessionState(rootPath: rootPath, openItems: items, selectedIndex: selectedIndex)
+    }
+
+    private func restoreSessionStateIfAvailable() -> Bool {
+        guard let rootDirectory else { return false }
+        let map = Self.loadSessionStateMap()
+        guard let session = map[rootDirectory.path] else { return false }
+        applySessionState(session)
+        return true
+    }
+
+    private func applySessionState(_ session: SessionState) {
+        guard let rootDirectory, session.rootPath == rootDirectory.path else { return }
+        let previousSuppression = suppressSessionPersistence
+        suppressSessionPersistence = true
+        openFiles = []
+        selectedFileURL = nil
+        terminalViews = [:]
+        terminalCounter = 0
+        var selectedURL: URL?
+        for (index, item) in session.openItems.enumerated() {
+            switch item.kind {
+            case .chat:
+                if !openFiles.contains(Self.chatURL) {
+                    openFiles.append(Self.chatURL)
+                }
+                if session.selectedIndex == index {
+                    selectedURL = Self.chatURL
+                }
+            case .terminal:
+                let url = URL(string: "\(Self.terminalScheme)://\(terminalCounter)")!
+                terminalCounter += 1
+                let workingDirectory = item.workingDirectory ?? rootDirectory.path
+                let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory)
+                view.onClose = { [weak self] in
+                    self?.closeFile(url)
+                }
+                terminalViews[url] = view
+                openFiles.append(url)
+                if session.selectedIndex == index {
+                    selectedURL = url
+                }
+            case .file:
+                guard let path = item.path else { continue }
+                let url = URL(fileURLWithPath: path).standardizedFileURL
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+                      !isDir.boolValue else { continue }
+                openFiles.append(url)
+                if session.selectedIndex == index {
+                    selectedURL = url
+                }
+            }
+        }
+
+        if let selectedURL {
+            if isChatURL(selectedURL) {
+                selectedFileURL = selectedURL
+                currentLanguage = nil
+                setEditorText("")
+            } else {
+                selectFile(selectedURL)
+            }
+        } else if let first = openFiles.first {
+            if isChatURL(first) {
+                selectedFileURL = first
+                currentLanguage = nil
+                setEditorText("")
+            } else {
+                selectFile(first)
+            }
+        } else {
+            selectedFileURL = nil
+            currentLanguage = nil
+            setEditorText("")
+        }
+        suppressSessionPersistence = previousSuppression
+    }
+
+    private static func loadSessionStateMap() -> [String: SessionState] {
+        guard let data = UserDefaults.standard.data(forKey: Self.sessionStateKey) else { return [:] }
+        return (try? JSONDecoder().decode([String: SessionState].self, from: data)) ?? [:]
+    }
+
+    private static func saveSessionStateMap(_ map: [String: SessionState]) {
+        var map = map
+        if map.count > maxSessionEntries {
+            let sorted = map.sorted { ($0.value.lastAccessed ?? .distantPast) < ($1.value.lastAccessed ?? .distantPast) }
+            let excess = map.count - maxSessionEntries
+            for (key, _) in sorted.prefix(excess) {
+                map.removeValue(forKey: key)
+            }
+        }
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(data, forKey: Self.sessionStateKey)
     }
 
     private func addRecentFile(_ url: URL) {

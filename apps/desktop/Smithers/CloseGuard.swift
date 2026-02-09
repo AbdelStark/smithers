@@ -17,6 +17,7 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
         Task { @MainActor in
             let shouldClose = await workspace.confirmCloseForWindow()
             if shouldClose {
+                workspace.persistSessionState()
                 bypassNextClose = true
                 sender.performClose(nil)
             }
@@ -39,6 +40,7 @@ final class SmithersAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let shouldTerminate = await workspace.confirmCloseForApplication()
             if shouldTerminate {
+                workspace.persistSessionState()
                 workspace.setCloseGuardsBypassed(true)
             }
             self.terminationInProgress = false
