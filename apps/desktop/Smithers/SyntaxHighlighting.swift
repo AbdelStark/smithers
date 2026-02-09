@@ -120,14 +120,25 @@ final class TreeSitterHighlighter {
     private static let maxHighlightCharacters = 200_000
     private static let maxInlineHighlightCharacters = 80_000
 
-    init(language: SupportedLanguage, font: NSFont) {
+    init(
+        language: SupportedLanguage,
+        font: NSFont,
+        lineSpacing: Double,
+        characterSpacing: Double,
+        ligaturesEnabled: Bool
+    ) {
         self.lang = language
         self.baseFont = font
         self.keywordFont = Self.fontWithWeight(font, weight: .medium)
         self.titleFont = Self.fontWithWeight(font, weight: .bold)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = CGFloat(lineSpacing)
         self.baseAttributes = [
             .foregroundColor: Palette.baseForeground,
             .font: font,
+            .paragraphStyle: paragraphStyle,
+            .kern: CGFloat(characterSpacing),
+            .ligature: ligaturesEnabled ? 1 : 0,
         ]
         try? parser.setLanguage(language.language)
 
