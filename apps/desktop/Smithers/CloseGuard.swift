@@ -1,10 +1,10 @@
 import AppKit
+import Foundation
 
 @MainActor
 final class WindowCloseDelegate: NSObject, NSWindowDelegate {
     weak var workspace: WorkspaceState?
     private var bypassNextClose = false
-    private static let windowFrameKey = "smithers.windowFrame"
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let workspace else { return true }
@@ -37,25 +37,37 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
         persistWindowFrame(window)
     }
 
-    static func loadWindowFrame() -> NSRect? {
-        guard let raw = UserDefaults.standard.string(forKey: windowFrameKey) else { return nil }
-        let frame = NSRectFromString(raw)
-        guard frame.width > 0, frame.height > 0 else { return nil }
-        return frame
-    }
-
     private func persistWindowFrame(_ window: NSWindow) {
-        UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.windowFrameKey)
+        WindowFrameStore.saveFrame(window.frame, for: workspace?.rootDirectory)
     }
 }
 
 @MainActor
 final class SmithersAppDelegate: NSObject, NSApplicationDelegate {
-    weak var workspace: WorkspaceState?
+    weak var workspace: WorkspaceState? {
+        didSet {
+            flushPendingOpenRequests()
+        }
+    }
     private var terminationInProgress = false
+    private var pendingOpenURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         PressAndHoldDisabler.disable()
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        handleOpenURLs([URL(fileURLWithPath: filename)])
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        handleOpenURLs(filenames.map { URL(fileURLWithPath: $0) })
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handleOpenURLs(urls)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -74,5 +86,39 @@ final class SmithersAppDelegate: NSObject, NSApplicationDelegate {
             NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
         }
         return .terminateLater
+    }
+
+    var hasPendingOpenRequests: Bool {
+        !pendingOpenURLs.isEmpty
+    }
+
+    private func handleOpenURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        guard let workspace else {
+            pendingOpenURLs.append(contentsOf: urls)
+            return
+        }
+        var fileURLs: [URL] = []
+        var schemeURLs: [URL] = []
+        for url in urls {
+            if url.isFileURL {
+                fileURLs.append(url)
+            } else {
+                schemeURLs.append(url)
+            }
+        }
+        if !fileURLs.isEmpty {
+            workspace.handleExternalOpen(urls: fileURLs)
+        }
+        for url in schemeURLs {
+            _ = workspace.handleOpenURL(url)
+        }
+    }
+
+    private func flushPendingOpenRequests() {
+        guard !pendingOpenURLs.isEmpty else { return }
+        let urls = pendingOpenURLs
+        pendingOpenURLs.removeAll()
+        handleOpenURLs(urls)
     }
 }
