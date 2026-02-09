@@ -680,6 +680,11 @@ final class GhosttyTerminalView: NSView, ObservableObject, NSTextInputClient {
         }
     }
 
+    func sendText(_ text: String) {
+        guard let surface else { return }
+        sendText(text, surface: surface)
+    }
+
     private func sendText(_ text: String, surface: ghostty_surface_t) {
         let len = text.utf8CString.count
         if len == 0 { return }
