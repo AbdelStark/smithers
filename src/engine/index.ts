@@ -903,6 +903,22 @@ async function executeTask(
 export async function renderFrame<Schema>(workflow: SmithersWorkflow<Schema>, ctx: any): Promise<{ runId: string; frameNo: number; xml: any; tasks: TaskDescriptor[] }> {
   const renderer = new SmithersRenderer();
   const result = await renderer.render(workflow.build(ctx), { ralphIterations: ctx?.iterations, defaultIteration: ctx?.iteration });
+
+  // Resolve string-keyed output tasks using the schema registry
+  if (workflow.schemaRegistry) {
+    for (const task of result.tasks) {
+      if (!task.outputTable && task.outputTableName) {
+        const entry = workflow.schemaRegistry.get(task.outputTableName);
+        if (entry) {
+          task.outputTable = entry.table;
+          if (!task.outputSchema) {
+            task.outputSchema = entry.zodSchema;
+          }
+        }
+      }
+    }
+  }
+
   return { runId: ctx.runId, frameNo: 0, xml: result.xml, tasks: result.tasks };
 }
 
@@ -1024,6 +1040,26 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
       });
       const xmlJson = canonicalizeXml(xml);
       const xmlHash = sha256Hex(xmlJson);
+
+      // Resolve string-keyed output tasks using the schema registry
+      if (workflow.schemaRegistry) {
+        for (const task of tasks) {
+          if (!task.outputTable && task.outputTableName) {
+            const entry = workflow.schemaRegistry.get(task.outputTableName);
+            if (entry) {
+              task.outputTable = entry.table;
+              if (!task.outputSchema) {
+                task.outputSchema = entry.zodSchema;
+              }
+            } else {
+              throw new SmithersError(
+                "UNKNOWN_OUTPUT_KEY",
+                `Task "${task.nodeId}" uses output key "${task.outputTableName}" which is not in the schema registry`,
+              );
+            }
+          }
+        }
+      }
 
       const workflowName = getWorkflowNameFromXml(xml);
       const cacheEnabled =
