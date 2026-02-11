@@ -22,7 +22,7 @@ export type TaskDescriptor = {
   iteration: number;
   ralphId?: string;
 
-  outputTable: Table;
+  outputTable: Table | null;
   outputTableName: string;
   outputSchema?: import("zod").ZodObject<any>; // Optional Zod schema for agent output
 
@@ -87,10 +87,16 @@ export type SmithersWorkflowOptions = {
   cache?: boolean;
 };
 
+export type SchemaRegistryEntry = {
+  table: any;
+  zodSchema: import("zod").ZodObject<any>;
+};
+
 export type SmithersWorkflow<Schema> = {
   db: unknown;
   build: (ctx: SmithersCtx<Schema>) => React.ReactElement;
   opts: SmithersWorkflowOptions;
+  schemaRegistry?: Map<string, SchemaRegistryEntry>;
 };
 
 export interface SmithersCtx<Schema> {
@@ -107,6 +113,15 @@ export interface SmithersCtx<Schema> {
     table: Schema[T],
     key: OutputKey,
   ): InferRow<Schema[T]> | undefined;
+
+  /** Get the latest output row for a nodeId (highest iteration, not just current). */
+  latest(table: any, nodeId: string): any;
+
+  /** Get latest output row, then safely parse/validate an array field using a Zod schema. Drops invalid items. */
+  latestArray(value: unknown, schema: import("zod").ZodType): any[];
+
+  /** Count distinct iterations for a nodeId in a table. */
+  iterationCount(table: any, nodeId: string): number;
 }
 
 export type OutputAccessor<Schema> = ((table: any) => any[]) & Record<string, any[]>;
@@ -265,7 +280,7 @@ export type WorkflowProps = {
 export type TaskProps<Row> = {
   key?: string;
   id: string;
-  output: Table;
+  output: Table | string;
   outputSchema?: import("zod").ZodObject<any>; // Optional Zod schema for agent output
   agent?: AgentLike;
   skipIf?: boolean;
@@ -275,7 +290,7 @@ export type TaskProps<Row> = {
   continueOnFail?: boolean;
   label?: string;
   meta?: Record<string, unknown>;
-  children: string | Row;
+  children: string | Row | React.ReactNode;
 };
 
 export type SequenceProps = {
