@@ -13,7 +13,8 @@
     "./jsx-dev-runtime": "./src/jsx-runtime.ts",
     "./tools": "./src/tools/index.ts",
     "./server": "./src/server/index.ts",
-    "./pi-plugin": "./src/pi-plugin/index.ts"
+    "./pi-plugin": "./src/pi-plugin/index.ts",
+    "./mdx-plugin": "./src/mdx-plugin.ts"
   },
   "workspaces": [
     "apps/*",
@@ -37,12 +38,14 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.36",
+    "@mdx-js/esbuild": "^3.1.1",
     "@types/react": "^19.2.10",
     "ai": "^6.0.69",
     "diff": "^5.2.0",
     "drizzle-orm": "^0.45.1",
     "drizzle-zod": "^0.8.3",
     "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "react-reconciler": "^0.31.0",
     "zod": "^4.3.6"
   }
