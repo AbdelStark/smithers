@@ -1,0 +1,252 @@
+---
+title: Monitoring & Logs
+description: Monitor workflow execution with events, NDJSON log files, the SSE endpoint, and database queries.
+---
+
+Smithers emits typed events for every lifecycle transition in a workflow run. These events are persisted to the SQLite database, written to NDJSON log files, and optionally streamed via Server-Sent Events (SSE). This guide covers all monitoring approaches.
+
+## onProgress Callback
+
+The most direct way to monitor a run is the `onProgress` callback passed to `runWorkflow`:
+
+```ts
+import { runWorkflow } from "smithers-orchestrator";
+import workflow from "./workflow";
+
+const result = await runWorkflow(workflow, {
+  input: { description: "Fix auth bugs" },
+  onProgress: (event) => {
+    switch (event.type) {
+      case "RunStarted":
+        console.log(`Run started: ${event.runId}`);
+        break;
+      case "NodeStarted":
+        console.log(`Task started: ${event.nodeId} (attempt ${event.attempt})`);
+        break;
+      case "NodeFinished":
+        console.log(`Task finished: ${event.nodeId}`);
+        break;
+      case "NodeFailed":
+        console.log(`Task failed: ${event.nodeId} -- ${event.error}`);
+        break;
+      case "NodeRetrying":
+        console.log(`Task retrying: ${event.nodeId} (attempt ${event.attempt})`);
+        break;
+      case "ApprovalRequested":
+        console.log(`Approval needed: ${event.nodeId}`);
+        break;
+      case "RunFinished":
+        console.log(`Run finished: ${event.runId}`);
+        break;
+      case "ToolCallStarted":
+        console.log(`Tool call: ${event.toolName}`);
+        break;
+    }
+  },
+});
+```
+
+The callback is invoked synchronously with every event during the run. It receives a typed `SmithersEvent` object.
+
+## NDJSON Log Files
+
+By default, Smithers writes every event as a newline-delimited JSON line to:
+
+```
+.smithers/executions/<runId>/logs/stream.ndjson
+```
+
+Each line is a self-contained JSON object:
+
+```json
+{"type":"RunStarted","runId":"smth_a1b2c3d4","timestampMs":1730000000000}
+{"type":"NodeStarted","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000000100}
+{"type":"ToolCallStarted","runId":"smth_a1b2c3d4","nodeId":"analyze","toolName":"read","timestampMs":1730000000200}
+{"type":"ToolCallFinished","runId":"smth_a1b2c3d4","nodeId":"analyze","toolName":"read","durationMs":45,"timestampMs":1730000000245}
+{"type":"NodeFinished","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000005000}
+{"type":"RunFinished","runId":"smth_a1b2c3d4","status":"finished","timestampMs":1730000010000}
+```
+
+### Live tailing
+
+Watch events in real time during execution:
+
+```bash
+tail -f .smithers/executions/<runId>/logs/stream.ndjson
+```
+
+### Filtering with jq
+
+```bash
+# Pretty-print all events
+cat .smithers/executions/<runId>/logs/stream.ndjson | jq .
+
+# Show only node lifecycle events
+cat .smithers/executions/<runId>/logs/stream.ndjson | jq 'select(.type | startswith("Node"))'
+
+# Show failures with error details
+cat .smithers/executions/<runId>/logs/stream.ndjson | jq 'select(.type == "NodeFailed")'
+
+# Calculate task durations
+cat .smithers/executions/<runId>/logs/stream.ndjson | jq 'select(.type == "NodeFinished") | {nodeId, durationMs: (.timestampMs - .timestampMs)}'
+
+# Count events by type
+cat .smithers/executions/<runId>/logs/stream.ndjson | jq -r '.type' | sort | uniq -c | sort -rn
+```
+
+### Custom log directory
+
+```bash
+# Write logs to a custom directory
+bunx smithers run workflow.tsx --log-dir ./my-logs
+
+# Disable log output entirely
+bunx smithers run workflow.tsx --no-log
+```
+
+## SSE Endpoint (Server)
+
+When using the Smithers server, you can stream events via Server-Sent Events:
+
+```
+GET /v1/runs/:runId/events
+```
+
+This endpoint sends events as they occur, formatted as SSE:
+
+```
+event: NodeStarted
+data: {"type":"NodeStarted","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000000100}
+
+event: NodeFinished
+data: {"type":"NodeFinished","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000005000}
+```
+
+Connect from a browser or any SSE client:
+
+```ts
+const eventSource = new EventSource("http://localhost:3000/v1/runs/smth_a1b2c3d4/events");
+
+eventSource.addEventListener("NodeStarted", (e) => {
+  const event = JSON.parse(e.data);
+  console.log(`Task started: ${event.nodeId}`);
+});
+
+eventSource.addEventListener("NodeFinished", (e) => {
+  const event = JSON.parse(e.data);
+  console.log(`Task finished: ${event.nodeId}`);
+});
+```
+
+## Event Types Reference
+
+Smithers emits 25+ event types. Here is the full list grouped by category:
+
+### Run lifecycle
+
+| Event | Description |
+|---|---|
+| `RunStarted` | A new run has been created |
+| `RunStatusChanged` | The run status transitioned (e.g., running to waiting-approval) |
+| `RunFinished` | The run completed successfully |
+| `RunFailed` | The run failed |
+| `RunCancelled` | The run was cancelled (abort signal or manual) |
+
+### Node lifecycle
+
+| Event | Description |
+|---|---|
+| `NodePending` | A node has been extracted from the tree and is waiting to be scheduled |
+| `NodeStarted` | A node's execution has begun (includes `nodeId`, `iteration`, `attempt`) |
+| `NodeFinished` | A node completed successfully |
+| `NodeFailed` | A node failed (includes error details) |
+| `NodeCancelled` | A node was cancelled (unmounted between renders or run aborted) |
+| `NodeSkipped` | A node was skipped (`skipIf` or Branch not taken) |
+| `NodeRetrying` | A node failed and will be retried (includes attempt number) |
+| `NodeOutput` | A node produced output (includes the output payload) |
+
+### Approval events
+
+| Event | Description |
+|---|---|
+| `NodeWaitingApproval` | A node with `needsApproval` is waiting for a decision |
+| `ApprovalRequested` | An approval request has been created in the database |
+| `ApprovalGranted` | A node was approved |
+| `ApprovalDenied` | A node was denied |
+
+### Tool events
+
+| Event | Description |
+|---|---|
+| `ToolCallStarted` | An agent tool invocation has started (includes tool name and arguments) |
+| `ToolCallFinished` | An agent tool invocation completed (includes result and duration) |
+
+### Frame events
+
+| Event | Description |
+|---|---|
+| `FrameCommitted` | A new render frame was persisted to the database |
+
+### Revert events
+
+| Event | Description |
+|---|---|
+| `RevertStarted` | A revert operation has begun |
+| `RevertFinished` | A revert operation completed |
+
+## Database Event Storage
+
+All events are persisted to the `_smithers_events` table with sequential ordering:
+
+```bash
+# View the last 20 events for a run
+sqlite3 smithers.db "SELECT seq, type, payload_json FROM _smithers_events WHERE run_id = '<id>' ORDER BY seq DESC LIMIT 20;"
+
+# Count events by type
+sqlite3 smithers.db "SELECT type, COUNT(*) FROM _smithers_events WHERE run_id = '<id>' GROUP BY type ORDER BY COUNT(*) DESC;"
+
+# Find the timestamp of the last event
+sqlite3 smithers.db "SELECT type, json_extract(payload_json, '$.timestampMs') as ts FROM _smithers_events WHERE run_id = '<id>' ORDER BY seq DESC LIMIT 1;"
+```
+
+The `_smithers_events` table has these columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `run_id` | text | The run ID |
+| `seq` | integer | Auto-incrementing sequence number (unique per run) |
+| `type` | text | The event type name |
+| `payload_json` | text | Full event payload as JSON |
+
+## Building a Progress Dashboard
+
+Combine the `onProgress` callback with your own state tracking to build a real-time dashboard:
+
+```ts
+const nodeStatuses = new Map<string, string>();
+
+await runWorkflow(workflow, {
+  input: { description: "Fix bugs" },
+  onProgress: (event) => {
+    if ("nodeId" in event) {
+      nodeStatuses.set(event.nodeId, event.type);
+    }
+
+    // Clear the terminal and redraw
+    console.clear();
+    for (const [nodeId, status] of nodeStatuses) {
+      const icon = status === "NodeFinished" ? "[done]"
+        : status === "NodeStarted" ? "[....]"
+        : status === "NodeFailed" ? "[FAIL]"
+        : "[    ]";
+      console.log(`${icon} ${nodeId}`);
+    }
+  },
+});
+```
+
+## Next Steps
+
+- [Debugging](/docs/guides/debugging) -- Dig deeper into failures using CLI and SQLite queries.
+- [Events Reference](/docs/runtime/events) -- Full event type definitions.
+- [Server Integration](/docs/integrations/server) -- Set up the HTTP server and SSE endpoint.
