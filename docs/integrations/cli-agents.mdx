@@ -1,0 +1,330 @@
+---
+title: CLI Agents
+description: Run external AI CLI tools (Claude Code, Codex, Gemini CLI) as drop-in Smithers agents that implement the AI SDK agent interface.
+---
+
+Smithers ships three CLI-backed agent classes that wrap external AI command-line tools. Each agent implements the AI SDK `Agent` interface, so they work as drop-in replacements anywhere you would use an AI SDK agent -- including in `<Task>` components.
+
+The agents spawn the corresponding CLI process, pass the prompt via arguments or stdin, capture the output, and return it in the standard `GenerateTextResult` format.
+
+## Import
+
+```ts
+import { ClaudeCodeAgent, CodexAgent, GeminiAgent } from "smithers-orchestrator/agents/cli";
+```
+
+## Prerequisites
+
+Each agent requires its corresponding CLI tool installed and available in the system PATH:
+
+| Agent | CLI Required | Install |
+|---|---|---|
+| `ClaudeCodeAgent` | `claude` | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) |
+| `CodexAgent` | `codex` | [OpenAI Codex CLI](https://github.com/openai/codex) |
+| `GeminiAgent` | `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) |
+
+## Quick Start
+
+```ts
+import { ClaudeCodeAgent, CodexAgent, GeminiAgent } from "smithers-orchestrator/agents/cli";
+
+const claude = new ClaudeCodeAgent({ model: "claude-sonnet-4-20250514" });
+const codex = new CodexAgent({ model: "gpt-4.1" });
+const gemini = new GeminiAgent({ model: "gemini-2.5-pro" });
+```
+
+Use them in workflows like any other agent:
+
+```tsx
+<Task id="analysis" output="analysis" agent={claude}>
+  {`Analyze the codebase and identify potential improvements.`}
+</Task>
+```
+
+---
+
+## Base Options
+
+All three agent classes share a common set of base options:
+
+```ts
+type BaseCliAgentOptions = {
+  id?: string;               // Agent ID (default: random UUID)
+  model?: string;            // Model name to pass to the CLI
+  systemPrompt?: string;     // System prompt prepended to the user prompt
+  instructions?: string;     // Alias for systemPrompt
+  cwd?: string;              // Working directory for the CLI process
+  env?: Record<string, string>;  // Additional environment variables
+  yolo?: boolean;            // Skip permission prompts (default: true)
+  timeoutMs?: number;        // Process timeout in milliseconds
+  maxOutputBytes?: number;   // Max output capture size
+  extraArgs?: string[];      // Additional CLI arguments appended to the command
+};
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `id` | Random UUID | Unique identifier for the agent instance |
+| `model` | `undefined` | Model name passed to the CLI's `--model` flag |
+| `systemPrompt` | `undefined` | System-level instructions prepended to the prompt |
+| `instructions` | `undefined` | Alias for `systemPrompt` |
+| `cwd` | Tool context rootDir or `process.cwd()` | Working directory for the spawned process |
+| `env` | `{}` | Extra environment variables merged with `process.env` |
+| `yolo` | `true` | When true, configures the CLI to skip all interactive permission prompts |
+| `timeoutMs` | `undefined` | Kill the process after this many milliseconds |
+| `maxOutputBytes` | `undefined` | Truncate captured output to this size |
+| `extraArgs` | `[]` | Arbitrary additional CLI flags |
+
+---
+
+## ClaudeCodeAgent
+
+Wraps the `claude` CLI with `--print` mode.
+
+```ts
+const claude = new ClaudeCodeAgent({
+  model: "claude-sonnet-4-20250514",
+  systemPrompt: "You are a careful code reviewer.",
+  timeoutMs: 300_000,
+});
+```
+
+### Claude-Specific Options
+
+```ts
+type ClaudeCodeAgentOptions = BaseCliAgentOptions & {
+  addDir?: string[];
+  agent?: string;
+  agents?: Record<string, { description?: string; prompt?: string }> | string;
+  allowDangerouslySkipPermissions?: boolean;
+  allowedTools?: string[];
+  appendSystemPrompt?: string;
+  betas?: string[];
+  chrome?: boolean;
+  continue?: boolean;
+  dangerouslySkipPermissions?: boolean;
+  debug?: boolean | string;
+  debugFile?: string;
+  disableSlashCommands?: boolean;
+  disallowedTools?: string[];
+  fallbackModel?: string;
+  file?: string[];
+  forkSession?: boolean;
+  fromPr?: string;
+  ide?: boolean;
+  includePartialMessages?: boolean;
+  inputFormat?: "text" | "stream-json";
+  jsonSchema?: string;
+  maxBudgetUsd?: number;
+  mcpConfig?: string[];
+  mcpDebug?: boolean;
+  noChrome?: boolean;
+  noSessionPersistence?: boolean;
+  outputFormat?: "text" | "json" | "stream-json";
+  permissionMode?: "acceptEdits" | "bypassPermissions" | "default" | "delegate" | "dontAsk" | "plan";
+  pluginDir?: string[];
+  replayUserMessages?: boolean;
+  resume?: string;
+  sessionId?: string;
+  settingSources?: string;
+  settings?: string;
+  strictMcpConfig?: boolean;
+  tools?: string[] | "default" | "";
+  verbose?: boolean;
+};
+```
+
+**Key options:**
+
+| Option | Description |
+|---|---|
+| `outputFormat` | Output format from the CLI: `"text"`, `"json"`, or `"stream-json"` (default: `"text"`) |
+| `permissionMode` | Permission handling: `"bypassPermissions"`, `"acceptEdits"`, `"default"`, `"delegate"`, `"dontAsk"`, `"plan"` |
+| `allowedTools` | Whitelist of tool names the CLI may use |
+| `disallowedTools` | Blacklist of tool names |
+| `maxBudgetUsd` | Spending cap in USD |
+| `mcpConfig` | MCP server configuration files |
+| `addDir` | Additional directories to include in the context |
+
+**Yolo mode behavior:** When `yolo` is `true` (the default), the agent automatically passes `--allow-dangerously-skip-permissions`, `--dangerously-skip-permissions`, and `--permission-mode bypassPermissions` unless `permissionMode` is explicitly set.
+
+---
+
+## CodexAgent
+
+Wraps the `codex` CLI using `codex exec` with stdin input.
+
+```ts
+const codex = new CodexAgent({
+  model: "gpt-4.1",
+  sandbox: "workspace-write",
+  fullAuto: true,
+});
+```
+
+### Codex-Specific Options
+
+```ts
+type CodexAgentOptions = BaseCliAgentOptions & {
+  config?: Record<string, string | number | boolean | object | null> | string[];
+  enable?: string[];
+  disable?: string[];
+  image?: string[];
+  oss?: boolean;
+  localProvider?: string;
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  profile?: string;
+  fullAuto?: boolean;
+  dangerouslyBypassApprovalsAndSandbox?: boolean;
+  cd?: string;
+  skipGitRepoCheck?: boolean;
+  addDir?: string[];
+  outputSchema?: string;
+  color?: "always" | "never" | "auto";
+  json?: boolean;
+  outputLastMessage?: string;
+};
+```
+
+**Key options:**
+
+| Option | Description |
+|---|---|
+| `sandbox` | Sandbox level: `"read-only"`, `"workspace-write"`, or `"danger-full-access"` |
+| `fullAuto` | Enable full auto mode (no confirmations) |
+| `config` | Configuration overrides as key-value pairs or raw strings |
+| `oss` | Use open-source models |
+| `localProvider` | Local model provider URL |
+| `outputLastMessage` | File path to write the last message (auto-generated temp file if not set) |
+
+**Yolo mode behavior:** When `yolo` is `true` and `fullAuto` is not set, the agent passes `--dangerously-bypass-approvals-and-sandbox`. If `fullAuto` is `true`, it uses `--full-auto` instead.
+
+**Input handling:** The prompt (with system prompt prepended) is passed via stdin using the `-` argument.
+
+---
+
+## GeminiAgent
+
+Wraps the `gemini` CLI.
+
+```ts
+const gemini = new GeminiAgent({
+  model: "gemini-2.5-pro",
+  sandbox: true,
+  allowedTools: ["read_file", "write_file"],
+});
+```
+
+### Gemini-Specific Options
+
+```ts
+type GeminiAgentOptions = BaseCliAgentOptions & {
+  debug?: boolean;
+  sandbox?: boolean;
+  approvalMode?: "default" | "auto_edit" | "yolo" | "plan";
+  experimentalAcp?: boolean;
+  allowedMcpServerNames?: string[];
+  allowedTools?: string[];
+  extensions?: string[];
+  listExtensions?: boolean;
+  resume?: string;
+  listSessions?: boolean;
+  deleteSession?: string;
+  includeDirectories?: string[];
+  screenReader?: boolean;
+  outputFormat?: "text" | "json" | "stream-json";
+};
+```
+
+**Key options:**
+
+| Option | Description |
+|---|---|
+| `sandbox` | Run in sandbox mode |
+| `approvalMode` | Approval handling: `"default"`, `"auto_edit"`, `"yolo"`, or `"plan"` |
+| `allowedTools` | Whitelist of tool names |
+| `extensions` | Gemini CLI extensions to load |
+| `includeDirectories` | Additional directories to include |
+| `outputFormat` | Output format: `"text"`, `"json"`, or `"stream-json"` (default: `"text"`) |
+
+**Yolo mode behavior:** When `yolo` is `true` and `approvalMode` is not set, the agent passes `--yolo`.
+
+**Input handling:** The prompt (with system prompt prepended) is passed via `--prompt`.
+
+---
+
+## Agent Interface
+
+All CLI agents implement the AI SDK `Agent` interface with two methods:
+
+### `generate(options)`
+
+Runs the CLI synchronously and returns a `GenerateTextResult`:
+
+```ts
+const result = await claude.generate({
+  prompt: "Explain the architecture of this codebase.",
+});
+console.log(result.text);
+```
+
+The method:
+1. Extracts the prompt from `options.prompt` (string) or `options.messages` (array).
+2. Builds the CLI command with all configured flags.
+3. Spawns the process and captures stdout/stderr.
+4. If the output format is `json` or `stream-json`, extracts text from the JSON payload.
+5. Returns the result wrapped in a `GenerateTextResult`.
+
+### `stream(options)`
+
+Calls `generate()` internally and wraps the result as a `StreamTextResult`. This is a convenience adapter -- the actual CLI execution is not truly streamed.
+
+```ts
+const stream = await claude.stream({
+  prompt: "Review this code.",
+});
+for await (const chunk of stream.textStream) {
+  process.stdout.write(chunk);
+}
+```
+
+---
+
+## Message Handling
+
+When called with messages (as Smithers does internally), the agents convert them to a text prompt:
+
+- **System messages** are extracted and prepended as a system prompt.
+- **User/assistant messages** are formatted as `ROLE: content` and joined with double newlines.
+- The system prompt from messages is combined with any `systemPrompt` configured on the agent instance.
+
+---
+
+## Example: Multi-Agent Workflow
+
+```tsx
+import { ClaudeCodeAgent, CodexAgent } from "smithers-orchestrator/agents/cli";
+
+const reviewer = new ClaudeCodeAgent({
+  model: "claude-sonnet-4-20250514",
+  systemPrompt: "You are a thorough code reviewer.",
+  timeoutMs: 120_000,
+});
+
+const fixer = new CodexAgent({
+  model: "gpt-4.1",
+  fullAuto: true,
+  timeoutMs: 180_000,
+});
+
+export default smithers((ctx) => (
+  <Workflow name="review-and-fix">
+    <Task id="review" output="review" agent={reviewer}>
+      {`Review the changes in this PR and identify issues.`}
+    </Task>
+    <Task id="fix" output="fix" agent={fixer}>
+      {`Fix these issues: ${ctx.output("review", { nodeId: "review" }).summary}`}
+    </Task>
+  </Workflow>
+));
+```
