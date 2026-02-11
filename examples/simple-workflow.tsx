@@ -1,5 +1,5 @@
-import { smithers, Workflow, Task, Sequence } from "smithers";
-import { Experimental_Agent as Agent } from "ai";
+import { smithers, Workflow, Task, Sequence } from "smithers-orchestrator";
+import { ToolLoopAgent as Agent } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import {
