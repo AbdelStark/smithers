@@ -1,0 +1,41 @@
+# <MergeQueue>
+
+Queue tasks so that at most `maxConcurrency` run concurrently across the group.
+
+- Default: omitting `maxConcurrency` creates a single-lane FIFO-style queue (`maxConcurrency = 1`).
+- Behavior: implemented via the same parallel-concurrency mechanism as `<Parallel>`, with the queue acting as a scoped concurrency group.
+
+## Examples
+
+### Default single-lane
+```tsx
+<MergeQueue>
+  <Task id="lint" output={outputC}>{{ value: 1 }}</Task>
+  <Task id="build" output={outputC}>{{ value: 2 }}</Task>
+  <Task id="test" output={outputC}>{{ value: 3 }}</Task>
+</MergeQueue>
+```
+Only one of the above runs at a time.
+
+### Custom concurrency
+```tsx
+<MergeQueue maxConcurrency={2}>
+  {items.map((it, i) => (
+    <Task key={i} id={`t${i}`} output={outputC}>{{ value: i }}</Task>
+  ))}
+</MergeQueue>
+```
+At most two tasks from the group run concurrently.
+
+### Nesting with Parallel
+```tsx
+<Parallel maxConcurrency={3}>
+  <MergeQueue>
+    {items.map((it, i) => (
+      <Task key={i} id={`q${i}`} output={outputC}>{{ value: i }}</Task>
+    ))}
+  </MergeQueue>
+</Parallel>
+```
+- The inner `<MergeQueue>` constrains its children to 1-at-a-time.
+- The outer `<Parallel>` may still run other, unrelated siblings (outside the queue) concurrently up to its limit.
