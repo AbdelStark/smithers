@@ -604,6 +604,15 @@ export class ClaudeCodeAgent extends BaseCliAgent {
   private readonly opts: ClaudeCodeAgentOptions;
 
   constructor(opts: ClaudeCodeAgentOptions = {}) {
+    // Unset ANTHROPIC_API_KEY so Claude Code uses the subscription instead of API billing.
+    // If you want API billing, use ToolLoopAgent from "ai" with anthropic() provider instead.
+    if (process.env.ANTHROPIC_API_KEY) {
+      console.warn(
+        "[smithers] ClaudeCodeAgent: unsetting ANTHROPIC_API_KEY so Claude Code uses your subscription. " +
+        "To use API billing instead, use ToolLoopAgent from 'ai' with anthropic() provider.",
+      );
+      opts = { ...opts, env: { ...opts.env, ANTHROPIC_API_KEY: "" } };
+    }
     super(opts);
     this.opts = opts;
   }

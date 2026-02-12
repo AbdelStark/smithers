@@ -837,6 +837,11 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 
 ### Guides
 - [Tutorial: Build a Workflow](https://smithers.sh/guides/tutorial-workflow): End-to-end three-step code review workflow.
+- [Production Project Structure](https://smithers.sh/guides/project-structure): Recommended file layout with MDX prompts, component-per-step, and Zod schemas.
+- [Model Selection](https://smithers.sh/guides/model-selection): Which models to use (Codex, Claude Opus, Sonnet), CLI vs API agents, dual-agent setup.
+- [Implement-Review Loop](https://smithers.sh/guides/review-loop): The recommended implement-validate-review-fix Ralph loop pattern.
+- [Dynamic Tickets](https://smithers.sh/guides/dynamic-tickets): Agent-driven ticket discovery for large projects vs hardcoded task lists.
+- [MDX Prompts](https://smithers.sh/guides/mdx-prompts): Using MDX for per-step prompts and system prompt composition from docs.
 - [Structured Output](https://smithers.sh/guides/structured-output): Schema validation flow, auto-retry, outputSchema prop.
 - [Error Handling](https://smithers.sh/guides/error-handling): Retries, timeouts, continueOnFail, skipIf, Branch fallbacks.
 - [Workflow Patterns](https://smithers.sh/guides/patterns): Project structure, schema organization, MDX prompts, naming conventions.

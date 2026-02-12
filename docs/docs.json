@@ -62,6 +62,11 @@
         "group": "Guides",
         "pages": [
           "guides/tutorial-workflow",
+          "guides/project-structure",
+          "guides/model-selection",
+          "guides/review-loop",
+          "guides/dynamic-tickets",
+          "guides/mdx-prompts",
           "guides/structured-output",
           "guides/error-handling",
           "guides/patterns",
