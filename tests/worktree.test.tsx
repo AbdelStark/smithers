@@ -74,6 +74,19 @@ describe("<Worktree>", () => {
     );
   });
 
+  test("empty path throws early in component (empty string)", () => {
+    // @ts-expect-error testing invalid prop
+    expect(() => Worktree({ path: "", children: null })).toThrow(
+      WORKTREE_EMPTY_PATH_ERROR,
+    );
+  });
+
+  test("missing path throws early in component (undefined)", () => {
+    // @ts-expect-error testing invalid prop
+    expect(() => Worktree({ path: undefined as any, children: null })).toThrow(
+      WORKTREE_EMPTY_PATH_ERROR,
+    );
+  });
   test("resolves relative path against baseRootDir", async () => {
     const renderer = new SmithersRenderer();
     const base = process.cwd();
