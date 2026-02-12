@@ -2,6 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { markdownComponents } from "./mdx-components";
 import { zodSchemaToJsonExample } from "./zod-to-example";
+import { DEFAULT_MERGE_QUEUE_CONCURRENCY, WORKTREE_EMPTY_PATH_ERROR } from "./constants";
 import type {
   WorkflowProps,
   TaskProps,
@@ -85,9 +86,8 @@ export function Parallel(props: ParallelProps) {
 
 export function MergeQueue(props: MergeQueueProps) {
   if (props.skipIf) return null;
-  // Default maxConcurrency to 1 when not provided
   const next: { maxConcurrency: number; id?: string } = {
-    maxConcurrency: props.maxConcurrency ?? 1,
+    maxConcurrency: props.maxConcurrency ?? DEFAULT_MERGE_QUEUE_CONCURRENCY,
     id: props.id,
   };
   return React.createElement("smithers:merge-queue", next, props.children);
@@ -106,8 +106,9 @@ export function Ralph(props: RalphProps) {
 
 export function Worktree(props: WorktreeProps) {
   if (!props.path || !String(props.path).trim()) {
-    throw new Error("<Worktree> requires a non-empty path prop");
+    throw new Error(WORKTREE_EMPTY_PATH_ERROR);
   }
   if (props.skipIf) return null;
-  return React.createElement("smithers:worktree", props, props.children);
+  const next: any = Object.fromEntries([["id", props.id], ["path", props.path]] as any);
+  return React.createElement("smithers:worktree", next, props.children);
 }

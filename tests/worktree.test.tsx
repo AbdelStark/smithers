@@ -1,5 +1,6 @@
 /** @jsxImportSource smithers */
 import { describe, expect, test } from "bun:test";
+import { WORKTREE_EMPTY_PATH_ERROR } from "../src/constants";
 import { SmithersRenderer } from "../src/dom/renderer";
 import {
   Parallel,
@@ -72,7 +73,6 @@ describe("<Worktree>", () => {
       "<Worktree> requires a non-empty path prop",
     );
   });
-
 
   test("resolves relative path against baseRootDir", async () => {
     const renderer = new SmithersRenderer();

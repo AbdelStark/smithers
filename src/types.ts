@@ -56,7 +56,7 @@ export type TaskDescriptor = {
  *
  * Tests use lightweight mocks that only implement `generate()` and may omit
  * optional fields like `id` or `tools`. Keep this structural type narrow to
- * avoid over‑constraining users and tests.
+ * avoid over-constraining users and tests.
  */
 export type AgentLike = {
   id?: string;

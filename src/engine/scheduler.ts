@@ -1,5 +1,6 @@
 import type { XmlNode, TaskDescriptor } from "../types";
 import { resolveStableId } from "../utils/tree-ids";
+import { DEFAULT_MERGE_QUEUE_CONCURRENCY } from "../constants";
 
 export type PlanNode =
   | { kind: "task"; nodeId: string }
@@ -110,8 +111,13 @@ export function buildPlanTree(xml: XmlNode | null): {
       };
     }
     if (tag === "smithers:merge-queue") {
-      // MergeQueue behaves like a parallel group with a default concurrency of 1
-      const max = parseNum(node.props.maxConcurrency, 1);
+      // MergeQueue behaves like a parallel group; actual enforcement happens via
+      // TaskDescriptor.parallelGroupId/parallelMaxConcurrency in the engine.
+      // Plan-level maxConcurrency is captured for completeness but is non-authoritative.
+      const max = parseNum(
+        node.props.maxConcurrency,
+        DEFAULT_MERGE_QUEUE_CONCURRENCY,
+      );
       return { kind: "parallel", children, maxConcurrency: max };
     }
     if (tag === "smithers:ralph") {
