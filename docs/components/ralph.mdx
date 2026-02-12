@@ -27,11 +27,11 @@ import { Ralph } from "smithers-orchestrator";
 ```tsx
 <Workflow name="review-loop">
   <Ralph
-    until={ctx.output(schema.review, { nodeId: "review" }).approved}
+    until={ctx.output("review", { nodeId: "review" }).approved}
     maxIterations={3}
     onMaxReached="return-last"
-  >
-    <Task id="review" output={schema.review} agent={reviewAgent}>
+    >
+    <Task id="review" output="review" agent={reviewAgent}>
       Review the code and decide whether to approve.
     </Task>
   </Ralph>
@@ -127,10 +127,10 @@ Use `ctx.iterationCount()` to check how many iterations have completed for a giv
 
 ```tsx
 <Ralph
-  until={ctx.iterationCount(schema.review, "review") >= 2}
+  until={ctx.iterationCount("review", "review") >= 2}
   maxIterations={5}
 >
-  <Task id="review" output={schema.review} agent={reviewAgent}>
+  <Task id="review" output="review" agent={reviewAgent}>
     {`This is iteration ${ctx.iteration}. Review the code.`}
   </Task>
 </Ralph>
@@ -213,12 +213,12 @@ export default smithers(db, (ctx) => (
   <Workflow name="iterative-review">
     <Ralph
       until={
-        ctx.outputMaybe(schema.review, { nodeId: "review" })?.approved === true
+        ctx.outputMaybe("review", { nodeId: "review" })?.approved === true
       }
       maxIterations={5}
       onMaxReached="return-last"
     >
-      <Task id="review" output={schema.review} agent={reviewAgent}>
+      <Task id="review" output="review" agent={reviewAgent}>
         {`Review this code and either approve or provide feedback:\n\n${ctx.input.code}`}
       </Task>
     </Ralph>

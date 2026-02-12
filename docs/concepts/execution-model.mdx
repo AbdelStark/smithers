@@ -106,18 +106,18 @@ This means the same workflow definition always produces the same execution order
 The re-render cycle is what makes Smithers workflows reactive:
 
 ```tsx
-export default smithers(db, (ctx) => {
-  const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
+export default smithers((ctx) => {
+  const analysis = ctx.outputMaybe("analyze", { nodeId: "analyze" });
 
   return (
     <Workflow name="example">
       <Sequence>
-        <Task id="analyze" output={schema.analyze} agent={codeAgent}>
+        <Task id="analyze" output="analyze" agent={codeAgent}>
           {`Analyze: ${ctx.input.description}`}
         </Task>
 
         {analysis ? (
-          <Task id="review" output={schema.output} agent={reviewAgent}>
+          <Task id="review" output="output" agent={reviewAgent}>
             {`Review: ${analysis.summary}`}
           </Task>
         ) : null}

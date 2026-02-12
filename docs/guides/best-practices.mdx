@@ -318,7 +318,7 @@ Return JSON with approved (boolean), feedback (string), score (1-10).`}
             {{
               title: `Review: ${ctx.input.description}`,
               body: review.feedback,
-              iterations: ctx.iterationCount?.() ?? 1,
+              iterations: ctx.iterationCount("review", "review") ?? 1,
               finalScore: review.score,
             }}
           </Task>

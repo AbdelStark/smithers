@@ -48,13 +48,13 @@ const codeAgent = new Agent({
 });
 
 // String prompt
-<Task id="analyze" output={schema.analyze} agent={codeAgent}>
+<Task id="analyze" output="analyze" agent={codeAgent}>
   {`Analyze the codebase in ${ctx.input.repoPath}`}
 </Task>
 
 // MDX/JSX prompt (rendered to markdown)
-<Task id="review" output={schema.review} agent={reviewAgent}>
-  <ReviewPrompt code={ctx.output(schema.analyze, { nodeId: "analyze" }).code} />
+<Task id="review" output="review" agent={reviewAgent}>
+  <ReviewPrompt code={ctx.output("analyze", { nodeId: "analyze" }).code} />
 </Task>
 ```
 
@@ -73,7 +73,7 @@ const analysisSchema = z.object({
 
 <Task
   id="analyze"
-  output={schema.analyze}
+  output="analyze"
   agent={codeAgent}
   outputSchema={analysisSchema}
 >
@@ -89,14 +89,14 @@ When no `agent` prop is provided, children are treated as the output payload and
 
 ```tsx
 // Object payload
-<Task id="config" output={schema.config}>
+<Task id="config" output="config">
   {{ environment: "production", debug: false }}
 </Task>
 
 // Computed payload from upstream output
-<Task id="summary" output={schema.summary}>
+<Task id="summary" output="summary">
   {{
-    total: ctx.output(schema.results, { nodeId: "results" }).count,
+    total: ctx.output("results", { nodeId: "results" }).count,
     status: "complete",
   }}
 </Task>
@@ -111,7 +111,7 @@ The `output` prop accepts two forms:
 **Drizzle table object (manual API)** -- pass the table directly. The runtime calls `getTableName()` to determine the storage destination.
 
 ```tsx
-<Task id="step" output={schema.myTable}>
+<Task id="step" output="myTable">
   {{ done: true }}
 </Task>
 ```
@@ -180,10 +180,10 @@ const codeAgent = new Agent({
 
 export default smithers(db, (ctx) => (
   <Workflow name="tasks-demo">
-    <Task id="analyze" output={schema.analyze} agent={codeAgent}>
+    <Task id="analyze" output="analyze" agent={codeAgent}>
       {`Analyze: ${ctx.input.description}`}
     </Task>
-    <Task id="setup" output={schema.setup}>
+    <Task id="setup" output="setup">
       {{ files: ["README.md", "package.json"] }}
     </Task>
   </Workflow>

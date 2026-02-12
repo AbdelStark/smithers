@@ -24,19 +24,19 @@ import { Branch } from "smithers-orchestrator";
 
 ```tsx
 <Workflow name="deploy-pipeline">
-  <Task id="test" output={schema.test}>
+  <Task id="test" output="test">
     {{ passed: true, error: null }}
   </Task>
 
   <Branch
-    if={ctx.output(schema.test, { nodeId: "test" }).passed}
+    if={ctx.output("test", { nodeId: "test" }).passed}
     then={
-      <Task id="deploy" output={schema.deploy}>
+      <Task id="deploy" output="deploy">
         {{ url: "https://prod.example.com" }}
       </Task>
     }
     else={
-      <Task id="notify-failure" output={schema.notifyFailure}>
+      <Task id="notify-failure" output="notifyFailure">
         {{ message: "Tests failed, skipping deploy." }}
       </Task>
     }
@@ -54,7 +54,7 @@ The `else` prop is optional. When omitted and the condition is `false`, nothing 
 <Branch
   if={ctx.input.needsReview}
   then={
-    <Task id="review" output={schema.review} agent={reviewAgent}>
+    <Task id="review" output="review" agent={reviewAgent}>
       Review the changes.
     </Task>
   }
@@ -67,7 +67,7 @@ Each branch can contain any workflow element, not just a single `<Task>`. Use `<
 
 ```tsx
 <Branch
-  if={ctx.output(schema.triage, { nodeId: "triage" }).severity === "critical"}
+  if={ctx.output("triage", { nodeId: "triage" }).severity === "critical"}
   then={
     <Sequence>
       <Task id="hotfix" output="hotfix" agent={codeAgent}>
@@ -109,11 +109,11 @@ Because Smithers re-renders the workflow tree each frame, branch conditions can 
 ```tsx
 export default smithers(db, (ctx) => (
   <Workflow name="adaptive">
-    <Task id="check" output={schema.check} agent={checkAgent}>
+    <Task id="check" output="check" agent={checkAgent}>
       Check whether the system is healthy.
     </Task>
     <Branch
-      if={ctx.outputMaybe(schema.check, { nodeId: "check" })?.healthy === true}
+      if={ctx.outputMaybe("check", { nodeId: "check" })?.healthy === true}
       then={<Task id="proceed" output="proceed">{{ ok: true }}</Task>}
       else={<Task id="remediate" output="remediate" agent={fixAgent}>Fix it.</Task>}
     />

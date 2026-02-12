@@ -12,9 +12,13 @@ There are two ways to access context depending on your API choice.
 **Builder function parameter** (both APIs):
 
 ```tsx
-export default smithers(db, (ctx) => (
+const { Workflow, smithers } = createSmithers({
+  analyze: z.object({ summary: z.string() }),
+});
+
+export default smithers((ctx) => (
   <Workflow name="example">
-    <Task id="analyze" output={schema.analyze} agent={agent}>
+    <Task id="analyze" output="analyze" agent={agent}>
       {`Analyze: ${ctx.input.description}`}
     </Task>
   </Workflow>
@@ -24,12 +28,14 @@ export default smithers(db, (ctx) => (
 **`useCtx()` hook** (inside components, with `createSmithers`):
 
 ```tsx
-const { Workflow, useCtx, smithers } = createSmithers(db);
+const { Workflow, useCtx, smithers } = createSmithers({
+  analyze: z.object({ summary: z.string() }),
+});
 
 function AnalyzeStep() {
   const ctx = useCtx();
   return (
-    <Task id="analyze" output={schema.analyze} agent={agent}>
+    <Task id="analyze" output="analyze" agent={agent}>
       {`Analyze: ${ctx.input.description}`}
     </Task>
   );
@@ -49,20 +55,24 @@ interface SmithersCtx<Schema> {
   runId: string;
   iteration: number;
   iterations?: Record<string, number>;
-  input: InferRow<Schema["input"]>;
+  input: Record<string, unknown>;
   outputs: OutputAccessor<Schema>;
 
-  output<T extends keyof Schema>(
-    table: Schema[T],
+  output<K extends keyof Schema & string>(
+    table: K,
     key: { nodeId: string; iteration?: number },
-  ): InferRow<Schema[T]>;
+  ): InferOutputEntry<Schema[K]>;
 
-  outputMaybe<T extends keyof Schema>(
-    table: Schema[T],
+  outputMaybe<K extends keyof Schema & string>(
+    table: K,
     key: { nodeId: string; iteration?: number },
-  ): InferRow<Schema[T]> | undefined;
+  ): InferOutputEntry<Schema[K]> | undefined;
 
-  latest(table: any, nodeId: string): any;
+  latest<K extends keyof Schema & string>(
+    table: K,
+    nodeId: string,
+  ): InferOutputEntry<Schema[K]> | undefined;
+
   latestArray(value: unknown, schema: ZodType): any[];
   iterationCount(table: any, nodeId: string): number;
 }
@@ -97,7 +107,7 @@ Note: nested Ralph is not currently supported, but the `iterations` map is still
 The input object for the current run. In the manual API, this is the row from `schema.input`. In the schema-driven API, it is the decoded JSON payload that was passed to `runWorkflow(workflow, { input: { ... } })`.
 
 ```tsx
-<Task id="analyze" output={schema.analyze} agent={agent}>
+<Task id="analyze" output="analyze" agent={agent}>
   {`Analyze: ${ctx.input.description}`}
 </Task>
 ```
@@ -109,7 +119,7 @@ An `OutputAccessor` that serves double duty -- it is both callable as a function
 **As a function** -- returns all rows for a table:
 
 ```ts
-const allAnalyzeRows = ctx.outputs(schema.analyze); // Row[]
+const allAnalyzeRows = ctx.outputs("analyze"); // Row[]
 ```
 
 **As a property** -- returns all rows by table name:
@@ -125,7 +135,7 @@ const allAnalyzeRows = ctx.outputs.analyze; // Row[]
 Returns the output row matching the given `nodeId` and optional `iteration`. **Throws an error** if no matching row exists.
 
 ```ts
-const result = ctx.output(schema.analyze, { nodeId: "analyze" });
+const result = ctx.output("analyze", { nodeId: "analyze" });
 // result.summary is guaranteed to be defined
 ```
 
@@ -138,17 +148,17 @@ Use this when you know the output must exist -- typically when reading from a ta
 Same as `output()` but returns `undefined` instead of throwing when no matching row exists.
 
 ```tsx
-const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
+const analysis = ctx.outputMaybe("analyze", { nodeId: "analyze" });
 
 return (
   <Workflow name="conditional">
     <Sequence>
-      <Task id="analyze" output={schema.analyze} agent={agent}>
+      <Task id="analyze" output="analyze" agent={agent}>
         {prompt}
       </Task>
 
       {analysis ? (
-        <Task id="review" output={schema.output} agent={reviewAgent}>
+        <Task id="review" output="review" agent={reviewAgent}>
           {`Review: ${analysis.summary}`}
         </Task>
       ) : null}
@@ -203,7 +213,7 @@ A common mistake is passing the Drizzle table name (the snake_case SQLite name l
 A utility for safely parsing array fields stored as JSON text in SQLite. Takes a raw value (typically from a JSON column) and a Zod schema, returning an array of validated items. Invalid items are silently dropped.
 
 ```ts
-const draft = ctx.latest(schema.draft, "write");
+const draft = ctx.latest("draft", "write");
 const sources = ctx.latestArray(draft?.sources, z.string());
 // sources: string[] -- only items that pass z.string() validation
 ```
@@ -227,7 +237,7 @@ Returns the number of distinct iterations that have produced output for a given 
 | `nodeId` | `string` | The `id` prop of the `<Task>` whose iterations you want to count. |
 
 ```ts
-const draftsCompleted = ctx.iterationCount(schema.draft, "write");
+const draftsCompleted = ctx.iterationCount("draft", "write");
 // e.g., 3 if iterations 0, 1, 2 have output rows
 ```
 
@@ -246,25 +256,25 @@ This means that inside a Ralph loop, calling `ctx.output(table, { nodeId: "write
 ### Chaining Sequential Tasks
 
 ```tsx
-export default smithers(db, (ctx) => {
-  const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
-  const review = ctx.outputMaybe(schema.review, { nodeId: "review" });
+export default smithers((ctx) => {
+  const analysis = ctx.outputMaybe("analyze", { nodeId: "analyze" });
+  const review = ctx.outputMaybe("review", { nodeId: "review" });
 
   return (
     <Workflow name="pipeline">
       <Sequence>
-        <Task id="analyze" output={schema.analyze} agent={analyzeAgent}>
+        <Task id="analyze" output="analyze" agent={analyzeAgent}>
           {`Analyze: ${ctx.input.description}`}
         </Task>
 
         {analysis ? (
-          <Task id="review" output={schema.review} agent={reviewAgent}>
+          <Task id="review" output="review" agent={reviewAgent}>
             {`Review this analysis: ${analysis.summary}`}
           </Task>
         ) : null}
 
         {review ? (
-          <Task id="publish" output={schema.output}>
+          <Task id="publish" output="output">
             {{ title: ctx.input.description, approved: review.approved }}
           </Task>
         ) : null}
@@ -277,15 +287,15 @@ export default smithers(db, (ctx) => {
 ### Reading Ralph Loop History
 
 ```tsx
-export default smithers(db, (ctx) => {
-  const latestDraft = ctx.latest(schema.draft, "write");
-  const draftCount = ctx.iterationCount(schema.draft, "write");
+export default smithers((ctx) => {
+  const latestDraft = ctx.latest("draft", "write");
+  const draftCount = ctx.iterationCount("draft", "write");
   const converged = latestDraft?.score > 0.9 || draftCount >= 5;
 
   return (
     <Workflow name="iterative">
       <Ralph until={converged} maxIterations={10} onMaxReached="return-last">
-        <Task id="write" output={schema.draft} agent={writerAgent}>
+        <Task id="write" output="draft" agent={writerAgent}>
           {latestDraft
             ? `Improve this draft (score: ${latestDraft.score}): ${latestDraft.text}`
             : `Write a first draft about: ${ctx.input.topic}`}
@@ -346,6 +356,6 @@ The workflow builder function `(ctx) => (...)` is called fresh on every render f
 ### Accessing All Outputs from a Table
 
 ```tsx
-const allReviews = ctx.outputs(schema.review);
+const allReviews = ctx.outputs("review");
 const approvedCount = allReviews.filter((r) => r.approved).length;
 ```

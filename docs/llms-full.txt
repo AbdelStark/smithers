@@ -548,18 +548,18 @@ This means the same workflow definition always produces the same execution order
 The re-render cycle is what makes Smithers workflows reactive:
 
 ```tsx
-export default smithers(db, (ctx) => {
-  const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
+export default smithers((ctx) => {
+  const analysis = ctx.outputMaybe("analyze", { nodeId: "analyze" });
 
   return (
     <Workflow name="example">
       <Sequence>
-        <Task id="analyze" output={schema.analyze} agent={codeAgent}>
+        <Task id="analyze" output="analyze" agent={codeAgent}>
           {`Analyze: ${ctx.input.description}`}
         </Task>
 
         {analysis ? (
-          <Task id="review" output={schema.output} agent={reviewAgent}>
+          <Task id="review" output="output" agent={reviewAgent}>
             {`Review: ${analysis.summary}`}
           </Task>
         ) : null}
@@ -803,9 +803,9 @@ There are two ways to access context depending on your API choice.
 **Builder function parameter** (both APIs):
 
 ```tsx
-export default smithers(db, (ctx) => (
+export default smithers((ctx) => (
   <Workflow name="example">
-    <Task id="analyze" output={schema.analyze} agent={agent}>
+    <Task id="analyze" output="analyze" agent={agent}>
       {`Analyze: ${ctx.input.description}`}
     </Task>
   </Workflow>
@@ -815,12 +815,14 @@ export default smithers(db, (ctx) => (
 **`useCtx()` hook** (inside components, with `createSmithers`):
 
 ```tsx
-const { Workflow, useCtx, smithers } = createSmithers(db);
+const { Workflow, useCtx, smithers } = createSmithers({
+  analyze: z.object({ summary: z.string() }),
+});
 
 function AnalyzeStep() {
   const ctx = useCtx();
   return (
-    <Task id="analyze" output={schema.analyze} agent={agent}>
+    <Task id="analyze" output="analyze" agent={agent}>
       {`Analyze: ${ctx.input.description}`}
     </Task>
   );
@@ -888,7 +890,7 @@ Note: nested Ralph is not currently supported, but the `iterations` map is still
 The input object for the current run. In the manual API, this is the row from `schema.input`. In the schema-driven API, it is the decoded JSON payload that was passed to `runWorkflow(workflow, { input: { ... } })`.
 
 ```tsx
-<Task id="analyze" output={schema.analyze} agent={agent}>
+<Task id="analyze" output="analyze" agent={agent}>
   {`Analyze: ${ctx.input.description}`}
 </Task>
 ```
@@ -900,7 +902,7 @@ An `OutputAccessor` that serves double duty -- it is both callable as a function
 **As a function** -- returns all rows for a table:
 
 ```ts
-const allAnalyzeRows = ctx.outputs(schema.analyze); // Row[]
+const allAnalyzeRows = ctx.outputs("analyze"); // Row[]
 ```
 
 **As a property** -- returns all rows by table name:
@@ -916,7 +918,7 @@ const allAnalyzeRows = ctx.outputs.analyze; // Row[]
 Returns the output row matching the given `nodeId` and optional `iteration`. **Throws an error** if no matching row exists.
 
 ```ts
-const result = ctx.output(schema.analyze, { nodeId: "analyze" });
+const result = ctx.output("analyze", { nodeId: "analyze" });
 // result.summary is guaranteed to be defined
 ```
 
@@ -929,17 +931,17 @@ Use this when you know the output must exist -- typically when reading from a ta
 Same as `output()` but returns `undefined` instead of throwing when no matching row exists.
 
 ```tsx
-const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
+const analysis = ctx.outputMaybe("analyze", { nodeId: "analyze" });
 
 return (
   <Workflow name="conditional">
     <Sequence>
-      <Task id="analyze" output={schema.analyze} agent={agent}>
+      <Task id="analyze" output="analyze" agent={agent}>
         {prompt}
       </Task>
 
       {analysis ? (
-        <Task id="review" output={schema.output} agent={reviewAgent}>
+        <Task id="review" output="output" agent={reviewAgent}>
           {`Review: ${analysis.summary}`}
         </Task>
       ) : null}
@@ -1017,7 +1019,7 @@ Returns the number of distinct iterations that have produced output for a given 
 | `nodeId` | `string` | The `id` prop of the `<Task>` whose iterations you want to count. |
 
 ```ts
-const draftsCompleted = ctx.iterationCount(schema.draft, "write");
+const draftsCompleted = ctx.iterationCount("draft", "write");
 // e.g., 3 if iterations 0, 1, 2 have output rows
 ```
 
@@ -1036,25 +1038,25 @@ This means that inside a Ralph loop, calling `ctx.output(table, { nodeId: "write
 ### Chaining Sequential Tasks
 
 ```tsx
-export default smithers(db, (ctx) => {
-  const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
-  const review = ctx.outputMaybe(schema.review, { nodeId: "review" });
+export default smithers((ctx) => {
+  const analysis = ctx.outputMaybe("analyze", { nodeId: "analyze" });
+  const review = ctx.outputMaybe("review", { nodeId: "review" });
 
   return (
     <Workflow name="pipeline">
       <Sequence>
-        <Task id="analyze" output={schema.analyze} agent={analyzeAgent}>
+        <Task id="analyze" output="analyze" agent={analyzeAgent}>
           {`Analyze: ${ctx.input.description}`}
         </Task>
 
         {analysis ? (
-          <Task id="review" output={schema.review} agent={reviewAgent}>
+          <Task id="review" output="review" agent={reviewAgent}>
             {`Review this analysis: ${analysis.summary}`}
           </Task>
         ) : null}
 
         {review ? (
-          <Task id="publish" output={schema.output}>
+          <Task id="publish" output="output">
             {{ title: ctx.input.description, approved: review.approved }}
           </Task>
         ) : null}
@@ -1067,15 +1069,15 @@ export default smithers(db, (ctx) => {
 ### Reading Ralph Loop History
 
 ```tsx
-export default smithers(db, (ctx) => {
-  const latestDraft = ctx.latest(schema.draft, "write");
-  const draftCount = ctx.iterationCount(schema.draft, "write");
+export default smithers((ctx) => {
+  const latestDraft = ctx.latest("draft", "write");
+  const draftCount = ctx.iterationCount("draft", "write");
   const converged = latestDraft?.score > 0.9 || draftCount >= 5;
 
   return (
     <Workflow name="iterative">
       <Ralph until={converged} maxIterations={10} onMaxReached="return-last">
-        <Task id="write" output={schema.draft} agent={writerAgent}>
+        <Task id="write" output="draft" agent={writerAgent}>
           {latestDraft
             ? `Improve this draft (score: ${latestDraft.score}): ${latestDraft.text}`
             : `Write a first draft about: ${ctx.input.topic}`}
@@ -1135,7 +1137,7 @@ export default smithers((ctx) => {
 ### Accessing All Outputs from a Table
 
 ```tsx
-const allReviews = ctx.outputs(schema.review);
+const allReviews = ctx.outputs("review");
 const approvedCount = allReviews.filter((r) => r.approved).length;
 ```
 
@@ -1155,14 +1157,14 @@ Set the `needsApproval` prop on a `<Task>` to gate it:
 ```tsx
 import { smithers, Workflow, Task, Sequence } from "smithers-orchestrator";
 
-export default smithers(db, (ctx) => (
+export default smithers((ctx) => (
   <Workflow name="deploy-pipeline">
     <Sequence>
-      <Task id="build" output={schema.build} agent={buildAgent}>
+      <Task id="build" output="build" agent={buildAgent}>
         {`Build the project: ${ctx.input.repo}`}
       </Task>
 
-      <Task id="deploy" output={schema.deploy} needsApproval>
+      <Task id="deploy" output="deploy" needsApproval>
         {{ url: "https://prod.example.com", version: "1.2.0" }}
       </Task>
     </Sequence>
@@ -1304,10 +1306,10 @@ When a task inside a `<Ralph>` loop has `needsApproval`, the approval is scoped 
 ```tsx
 <Ralph until={converged} maxIterations={5}>
   <Sequence>
-    <Task id="generate" output={schema.draft} agent={writerAgent}>
+    <Task id="generate" output="draft" agent={writerAgent}>
       {prompt}
     </Task>
-    <Task id="publish" output={schema.published} needsApproval>
+    <Task id="publish" output="published" needsApproval>
       {{ content: latestDraft?.text }}
     </Task>
   </Sequence>
@@ -1322,11 +1324,11 @@ Iteration 0 of "publish" requires approval. If approved, the Ralph loop may adva
 
 ```tsx
 <Sequence>
-  <Task id="plan" output={schema.plan} agent={planAgent}>
+  <Task id="plan" output="plan" agent={planAgent}>
     {`Plan changes for: ${ctx.input.target}`}
   </Task>
-  <Task id="execute" output={schema.result} agent={execAgent} needsApproval>
-    {`Execute the plan: ${ctx.output(schema.plan, { nodeId: "plan" }).steps}`}
+  <Task id="execute" output="result" agent={execAgent} needsApproval>
+    {`Execute the plan: ${ctx.output("plan", { nodeId: "plan" }).steps}`}
   </Task>
 </Sequence>
 ```
@@ -1336,7 +1338,7 @@ Iteration 0 of "publish" requires approval. If approved, the Ralph loop may adva
 ```tsx
 <Task
   id="deploy"
-  output={schema.deploy}
+  output="deploy"
   needsApproval
   continueOnFail
 >
@@ -1363,7 +1365,7 @@ There are two ways to enable caching:
 
 ```tsx
 <Workflow name="my-workflow" cache>
-  <Task id="analyze" output={schema.analyze} agent={agent}>
+  <Task id="analyze" output="analyze" agent={agent}>
     {prompt}
   </Task>
 </Workflow>
@@ -1372,7 +1374,7 @@ There are two ways to enable caching:
 **Via the `smithers()` options:**
 
 ```ts
-export default smithers(db, buildWorkflow, { cache: true });
+export default smithers(buildWorkflow, { cache: true });
 ```
 
 Both approaches enable caching for all tasks in the workflow. There is no per-task cache toggle -- it is workflow-wide.
@@ -1966,13 +1968,13 @@ const codeAgent = new Agent({
 });
 
 // String prompt
-<Task id="analyze" output={schema.analyze} agent={codeAgent}>
+<Task id="analyze" output="analyze" agent={codeAgent}>
   {`Analyze the codebase in ${ctx.input.repoPath}`}
 </Task>
 
 // MDX/JSX prompt (rendered to markdown)
-<Task id="review" output={schema.review} agent={reviewAgent}>
-  <ReviewPrompt code={ctx.output(schema.analyze, { nodeId: "analyze" }).code} />
+<Task id="review" output="review" agent={reviewAgent}>
+  <ReviewPrompt code={ctx.output("analyze", { nodeId: "analyze" }).code} />
 </Task>
 ```
 
@@ -1991,7 +1993,7 @@ const analysisSchema = z.object({
 
 <Task
   id="analyze"
-  output={schema.analyze}
+  output="analyze"
   agent={codeAgent}
   outputSchema={analysisSchema}
 >
@@ -2007,14 +2009,14 @@ When no `agent` prop is provided, children are treated as the output payload and
 
 ```tsx
 // Object payload
-<Task id="config" output={schema.config}>
+<Task id="config" output="config">
   {{ environment: "production", debug: false }}
 </Task>
 
 // Computed payload from upstream output
-<Task id="summary" output={schema.summary}>
+<Task id="summary" output="summary">
   {{
-    total: ctx.output(schema.results, { nodeId: "results" }).count,
+    total: ctx.output("results", { nodeId: "results" }).count,
     status: "complete",
   }}
 </Task>
@@ -2151,13 +2153,13 @@ import { Sequence } from "smithers-orchestrator";
 ```tsx
 <Workflow name="pipeline">
   <Sequence>
-    <Task id="fetch" output={schema.fetch}>
+    <Task id="fetch" output="fetch">
       {{ url: "https://api.example.com/data" }}
     </Task>
-    <Task id="transform" output={schema.transform} agent={transformer}>
-      {`Transform the data: ${ctx.output(schema.fetch, { nodeId: "fetch" }).url}`}
+    <Task id="transform" output="transform" agent={transformer}>
+      {`Transform the data: ${ctx.output("fetch", { nodeId: "fetch" }).url}`}
     </Task>
-    <Task id="store" output={schema.store}>
+    <Task id="store" output="store">
       {{ stored: true }}
     </Task>
   </Sequence>
@@ -2251,13 +2253,13 @@ import { Parallel } from "smithers-orchestrator";
 ```tsx
 <Workflow name="checks">
   <Parallel>
-    <Task id="lint" output={schema.lint}>
+    <Task id="lint" output="lint">
       {{ errors: 0 }}
     </Task>
-    <Task id="typecheck" output={schema.typecheck}>
+    <Task id="typecheck" output="typecheck">
       {{ passed: true }}
     </Task>
-    <Task id="test" output={schema.test}>
+    <Task id="test" output="test">
       {{ passed: true }}
     </Task>
   </Parallel>
@@ -2360,19 +2362,19 @@ import { Branch } from "smithers-orchestrator";
 
 ```tsx
 <Workflow name="deploy-pipeline">
-  <Task id="test" output={schema.test}>
+  <Task id="test" output="test">
     {{ passed: true, error: null }}
   </Task>
 
   <Branch
-    if={ctx.output(schema.test, { nodeId: "test" }).passed}
+    if={ctx.output("test", { nodeId: "test" }).passed}
     then={
-      <Task id="deploy" output={schema.deploy}>
+      <Task id="deploy" output="deploy">
         {{ url: "https://prod.example.com" }}
       </Task>
     }
     else={
-      <Task id="notify-failure" output={schema.notifyFailure}>
+      <Task id="notify-failure" output="notifyFailure">
         {{ message: "Tests failed, skipping deploy." }}
       </Task>
     }
@@ -2390,7 +2392,7 @@ The `else` prop is optional. When omitted and the condition is `false`, nothing 
 <Branch
   if={ctx.input.needsReview}
   then={
-    <Task id="review" output={schema.review} agent={reviewAgent}>
+    <Task id="review" output="review" agent={reviewAgent}>
       Review the changes.
     </Task>
   }
@@ -2403,7 +2405,7 @@ Each branch can contain any workflow element, not just a single `<Task>`. Use `<
 
 ```tsx
 <Branch
-  if={ctx.output(schema.triage, { nodeId: "triage" }).severity === "critical"}
+  if={ctx.output("triage", { nodeId: "triage" }).severity === "critical"}
   then={
     <Sequence>
       <Task id="hotfix" output="hotfix" agent={codeAgent}>
@@ -2443,13 +2445,13 @@ The `if` prop is evaluated at **render time**, when the JSX tree is constructed.
 Because Smithers re-renders the workflow tree each frame, branch conditions can depend on the outputs of previously completed tasks:
 
 ```tsx
-export default smithers(db, (ctx) => (
+export default smithers((ctx) => (
   <Workflow name="adaptive">
-    <Task id="check" output={schema.check} agent={checkAgent}>
+    <Task id="check" output="check" agent={checkAgent}>
       Check whether the system is healthy.
     </Task>
     <Branch
-      if={ctx.outputMaybe(schema.check, { nodeId: "check" })?.healthy === true}
+      if={ctx.outputMaybe("check", { nodeId: "check" })?.healthy === true}
       then={<Task id="proceed" output="proceed">{{ ok: true }}</Task>}
       else={<Task id="remediate" output="remediate" agent={fixAgent}>Fix it.</Task>}
     />
@@ -2500,11 +2502,11 @@ import { Ralph } from "smithers-orchestrator";
 ```tsx
 <Workflow name="review-loop">
   <Ralph
-    until={ctx.output(schema.review, { nodeId: "review" }).approved}
+    until={ctx.output("review", { nodeId: "review" }).approved}
     maxIterations={3}
     onMaxReached="return-last"
   >
-    <Task id="review" output={schema.review} agent={reviewAgent}>
+    <Task id="review" output="review" agent={reviewAgent}>
       Review the code and decide whether to approve.
     </Task>
   </Ralph>
@@ -2599,10 +2601,10 @@ Use `ctx.iterationCount()` to check how many iterations have completed for a giv
 
 ```tsx
 <Ralph
-  until={ctx.iterationCount(schema.review, "review") >= 2}
+  until={ctx.iterationCount("review", "review") >= 2}
   maxIterations={5}
 >
-  <Task id="review" output={schema.review} agent={reviewAgent}>
+  <Task id="review" output="review" agent={reviewAgent}>
     {`This is iteration ${ctx.iteration}. Review the code.`}
   </Task>
 </Ralph>
@@ -2681,16 +2683,16 @@ const reviewAgent = new Agent({
   instructions: "You are a thorough code reviewer.",
 });
 
-export default smithers(db, (ctx) => (
+export default smithers((ctx) => (
   <Workflow name="iterative-review">
     <Ralph
       until={
-        ctx.outputMaybe(schema.review, { nodeId: "review" })?.approved === true
+        ctx.outputMaybe("review", { nodeId: "review" })?.approved === true
       }
       maxIterations={5}
       onMaxReached="return-last"
     >
-      <Task id="review" output={schema.review} agent={reviewAgent}>
+      <Task id="review" output="review" agent={reviewAgent}>
         {`Review this code and either approve or provide feedback:\n\n${ctx.input.code}`}
       </Task>
     </Ralph>

@@ -15,11 +15,11 @@ import { smithers, Workflow, Task, Sequence } from "smithers-orchestrator";
 export default smithers(db, (ctx) => (
   <Workflow name="deploy-pipeline">
     <Sequence>
-      <Task id="build" output={schema.build} agent={buildAgent}>
+      <Task id="build" output="build" agent={buildAgent}>
         {`Build the project: ${ctx.input.repo}`}
       </Task>
 
-      <Task id="deploy" output={schema.deploy} needsApproval>
+      <Task id="deploy" output="deploy" needsApproval>
         {{ url: "https://prod.example.com", version: "1.2.0" }}
       </Task>
     </Sequence>
@@ -161,10 +161,10 @@ When a task inside a `<Ralph>` loop has `needsApproval`, the approval is scoped 
 ```tsx
 <Ralph until={converged} maxIterations={5}>
   <Sequence>
-    <Task id="generate" output={schema.draft} agent={writerAgent}>
+    <Task id="generate" output="draft" agent={writerAgent}>
       {prompt}
     </Task>
-    <Task id="publish" output={schema.published} needsApproval>
+    <Task id="publish" output="published" needsApproval>
       {{ content: latestDraft?.text }}
     </Task>
   </Sequence>
@@ -179,11 +179,11 @@ Iteration 0 of "publish" requires approval. If approved, the Ralph loop may adva
 
 ```tsx
 <Sequence>
-  <Task id="plan" output={schema.plan} agent={planAgent}>
+  <Task id="plan" output="plan" agent={planAgent}>
     {`Plan changes for: ${ctx.input.target}`}
   </Task>
-  <Task id="execute" output={schema.result} agent={execAgent} needsApproval>
-    {`Execute the plan: ${ctx.output(schema.plan, { nodeId: "plan" }).steps}`}
+  <Task id="execute" output="result" agent={execAgent} needsApproval>
+    {`Execute the plan: ${ctx.output("plan", { nodeId: "plan" }).steps}`}
   </Task>
 </Sequence>
 ```
@@ -193,7 +193,7 @@ Iteration 0 of "publish" requires approval. If approved, the Ralph loop may adva
 ```tsx
 <Task
   id="deploy"
-  output={schema.deploy}
+  output="deploy"
   needsApproval
   continueOnFail
 >

@@ -23,13 +23,13 @@ import { Sequence } from "smithers-orchestrator";
 ```tsx
 <Workflow name="pipeline">
   <Sequence>
-    <Task id="fetch" output={schema.fetch}>
+    <Task id="fetch" output="fetch">
       {{ url: "https://api.example.com/data" }}
     </Task>
-    <Task id="transform" output={schema.transform} agent={transformer}>
-      {`Transform the data: ${ctx.output(schema.fetch, { nodeId: "fetch" }).url}`}
+    <Task id="transform" output="transform" agent={transformer}>
+      {`Transform the data: ${ctx.output("fetch", { nodeId: "fetch" }).url}`}
     </Task>
-    <Task id="store" output={schema.store}>
+    <Task id="store" output="store">
       {{ stored: true }}
     </Task>
   </Sequence>
