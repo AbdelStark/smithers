@@ -3,7 +3,7 @@ title: Dynamic Tickets
 description: How to use agent-driven ticket discovery for large projects instead of hardcoding task lists.
 ---
 
-For large projects with more than ~20 tasks, hardcoding a list of tasks is fragile. The codebase evolves as tickets are completed, and a static list cannot account for emergent requirements, shifting priorities, or work discovered during implementation.
+For large projects with more than about 20 tasks, hardcoding a list of tasks is fragile. The codebase evolves as tickets are completed, and a static list cannot account for emergent requirements, shifting priorities, or work discovered during implementation.
 
 Smithers solves this with **dynamic ticket discovery** -- an agent explores the codebase, compares current state to specs, and generates the next batch of tickets at runtime. When all tickets complete, the workflow re-renders, the Discover agent runs again, and finds the next batch.
 
@@ -11,8 +11,8 @@ Smithers solves this with **dynamic ticket discovery** -- an agent explores the 
 
 | Approach | Best for | Example |
 | --- | --- | --- |
-| **Dynamic discovery** | Large, evolving projects (>20 tasks) | Building a full application from a PRD |
-| **Hardcoded tasks** | Focused features (<20 tasks) | Adding auth, fixing a bug, a specific refactor |
+| **Dynamic discovery** | Large, evolving projects (more than 20 tasks) | Building a full application from a PRD |
+| **Hardcoded tasks** | Focused features (fewer than 20 tasks) | Adding auth, fixing a bug, a specific refactor |
 
 ## Dynamic Discovery Pattern
 
@@ -162,7 +162,7 @@ The Discover prompt should instruct the agent to:
 
 ## Hardcoded Tasks (For Smaller Projects)
 
-For projects with fewer than ~20 well-defined tasks, hardcoding is simpler and more predictable:
+For projects with fewer than 20 well-defined tasks, hardcoding is simpler and more predictable:
 
 ```tsx
 const tasks = [
