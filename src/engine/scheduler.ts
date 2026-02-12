@@ -110,6 +110,11 @@ export function buildPlanTree(xml: XmlNode | null): {
         maxConcurrency: Number.isFinite(max) ? max : undefined,
       };
     }
+    // Worktree has no special scheduling semantics in the plan tree.
+    // Recognize explicitly to preserve subtree boundaries and ordering.
+    if (tag === "smithers:worktree") {
+      return { kind: "group", children };
+    }
     if (tag === "smithers:merge-queue") {
       // MergeQueue behaves like a parallel group; actual enforcement happens via
       // TaskDescriptor.parallelGroupId/parallelMaxConcurrency in the engine.
