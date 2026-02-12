@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { SmithersRenderer } from "../src/dom/renderer";
 import {
   MergeQueue,
+  Parallel,
   Task,
   Workflow,
   runWorkflow,
@@ -121,5 +122,53 @@ describe("<MergeQueue>", () => {
     expect(max).toBeLessThanOrEqual(2);
     cleanup();
   });
-});
+  test("innermost group controls concurrency when nested inside Parallel", async () => {
+    const { db, cleanup } = buildDb();
+    let queueCurrent = 0, queueMax = 0;
+    let outsideCurrent = 0, outsideMax = 0;
+    const agent: any = {
+      id: "fake",
+      generate: async ({ prompt }: { prompt: string }) => {
+        const isQueue = String(prompt ?? "").startsWith("q:");
+        if (isQueue) {
+          queueCurrent += 1;
+          queueMax = Math.max(queueMax, queueCurrent);
+          await sleep(25);
+          queueCurrent -= 1;
+        } else {
+          outsideCurrent += 1;
+          outsideMax = Math.max(outsideMax, outsideCurrent);
+          await sleep(25);
+          outsideCurrent -= 1;
+        }
+        return { output: { value: 1 } };
+      },
+    };
 
+    const wf = smithers(db as any, (_ctx) => (
+      <Workflow name="mq-nest">
+        <Parallel maxConcurrency={3}>
+          <MergeQueue>
+            {Array.from({ length: 3 }, (_, i) => (
+              <Task key={`q${i}`} id={`q${i}`} output={outputC} agent={agent}>
+                {`q:${i}`}
+              </Task>
+            ))}
+          </MergeQueue>
+          <Task id="o0" output={outputC} agent={agent}>
+            o:0
+          </Task>
+          <Task id="o1" output={outputC} agent={agent}>
+            o:1
+          </Task>
+        </Parallel>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(wf, { input: {}, maxConcurrency: 4 });
+    expect(result.status).toBe("finished");
+    expect(queueMax).toBeLessThanOrEqual(1);
+    expect(outsideMax).toBeGreaterThanOrEqual(1);
+    cleanup();
+  });
+});
