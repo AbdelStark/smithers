@@ -1,6 +1,6 @@
 import type { XmlNode, TaskDescriptor } from "../types";
 import { resolveStableId } from "../utils/tree-ids";
-import { DEFAULT_MERGE_QUEUE_CONCURRENCY } from "../constants";
+import { parseBool, parseNum } from "../utils/parse";
 
 export type PlanNode =
   | { kind: "task"; nodeId: string }
@@ -52,15 +52,6 @@ function key(nodeId: string, iteration: number) {
   return `${nodeId}::${iteration}`;
 }
 
-function parseBool(value: string | undefined): boolean {
-  if (!value) return false;
-  return value === "true" || value === "1";
-}
-
-function parseNum(value: string | undefined, fallback: number): number {
-  const num = value ? Number(value) : NaN;
-  return Number.isFinite(num) ? num : fallback;
-}
 
 export function buildPlanTree(xml: XmlNode | null): {
   plan: PlanNode | null;
@@ -114,18 +105,7 @@ export function buildPlanTree(xml: XmlNode | null): {
     // Recognize explicitly to preserve subtree boundaries and ordering.
     if (tag === "smithers:worktree") {
       return { kind: "group", children };
-    }
-    if (tag === "smithers:merge-queue") {
-      // MergeQueue behaves like a parallel group; actual enforcement happens via
-      // TaskDescriptor.parallelGroupId/parallelMaxConcurrency in the engine.
-      // Plan-level maxConcurrency is captured for completeness but is non-authoritative.
-      const max = parseNum(
-        node.props.maxConcurrency,
-        DEFAULT_MERGE_QUEUE_CONCURRENCY,
-      );
-      return { kind: "parallel", children, maxConcurrency: max };
-    }
-    if (tag === "smithers:ralph") {
+    }    if (tag === "smithers:ralph") {
       const id = resolveStableId(node.props.id, "ralph", ctx.path);
       if (seenRalph.has(id)) {
         throw new Error(`Duplicate Ralph id detected: ${id}`);
