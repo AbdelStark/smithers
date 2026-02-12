@@ -137,7 +137,7 @@ exit 3
       const res = await vcs.workspaceAdd("bad", "/nope/path", { atRev: "r" });
       expect(res.success).toBe(false);
       expect(typeof res.error).toBe("string");
-      expect(res.error.length).toBeGreaterThan(0);
+      expect((res.error ?? "").length).toBeGreaterThan(0);
     });
   });
 });

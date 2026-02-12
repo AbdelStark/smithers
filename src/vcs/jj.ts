@@ -93,7 +93,7 @@ export type JjRevertResult = {
 
 /**
  * Restore the working copy to a previously recorded jujutsu `change_id`.
- * Kept for backwards compatibility with existing tests.
+ * Used by the engine to revert attempts within the correct repo/worktree (via `cwd`).
  */
 export async function revertToJjPointer(
   pointer: string,
