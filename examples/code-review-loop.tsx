@@ -1,7 +1,7 @@
 import { smithers, Workflow, Task, Sequence, Ralph } from "smithers-orchestrator";
 import { ToolLoopAgent as Agent, Output } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
-import { read, edit, bash, grep } from "smithers-orchestrator/tools";
+import { read, bash, grep } from "smithers-orchestrator/tools";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import {
   sqliteTable,
@@ -132,7 +132,7 @@ Respond with ONLY a JSON object:
 {"filesChanged": ["path/to/file1.ts"], "changesSummary": "Description of fixes needed"}`,
 });
 
-export default smithers(db, (ctx) => {
+export default smithers(db, (ctx: any) => {
   const latestReview = ctx.outputs.review?.[ctx.outputs.review.length - 1];
   const isApproved = latestReview?.approved ?? false;
 
