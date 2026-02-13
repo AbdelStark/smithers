@@ -219,6 +219,12 @@ export function extractFromHost(
       const kind = raw.__smithersKind;
       const isAgent = kind === "agent" || Boolean(agent);
       const prompt = isAgent ? String(raw.children ?? "") : undefined;
+      if (prompt === "[object Object]") {
+        throw new Error(
+          `Task "${raw.id ?? nodeId}" prompt resolved to [object Object] — MDX preload is likely not active.\n` +
+            `Check that bunfig.toml has a top-level preload (not under [run]) and mdxPlugin() is registered.`,
+        );
+      }
       const staticPayload = isAgent
         ? undefined
         : (raw.__smithersPayload ?? raw.__payload ?? raw.children);

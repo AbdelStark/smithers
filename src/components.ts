@@ -43,8 +43,20 @@ function renderChildrenToText(children: any): string {
     return renderToStaticMarkup(element)
       .replace(/\n{3,}/g, "\n\n")
       .trim();
-  } catch {
-    return String(children ?? "");
+  } catch (err) {
+    const result = String(children ?? "");
+    if (result === "[object Object]") {
+      throw new Error(
+        `MDX prompt could not be rendered — the prompt resolved to [object Object] instead of a React component.\n\n` +
+          `This usually means the MDX preload is not active. Common causes:\n` +
+          `  • bunfig.toml uses [run] preload instead of top-level preload (the [run] section doesn't apply to dynamic imports)\n` +
+          `  • bunfig.toml is not in the current working directory\n` +
+          `  • mdxPlugin() is not registered in the preload script\n` +
+          `  • The MDX file is imported without a default import (use: import MyPrompt from "./prompt.mdx")\n\n` +
+          `Original error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return result;
   }
 }
 
