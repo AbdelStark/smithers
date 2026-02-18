@@ -23,7 +23,7 @@ There is no hidden in-memory state. Every task result is stored as:
 ## Example
 
 ```tsx
-import { createSmithers, Task, Sequence } from "smithers-orchestrator";
+import { createSmithers, Sequence } from "smithers-orchestrator";
 import { z } from "zod";
 
 const analyzeSchema = z.object({
@@ -36,7 +36,7 @@ const fixSchema = z.object({
   explanation: z.string(),
 });
 
-const { Workflow, smithers } = createSmithers({
+const { Workflow, Task, smithers, outputs } = createSmithers({
   analyze: analyzeSchema,
   fix: fixSchema,
 });
@@ -44,11 +44,11 @@ const { Workflow, smithers } = createSmithers({
 export default smithers((ctx) => (
   <Workflow name="bugfix">
     <Sequence>
-      <Task id="analyze" output="analyze" agent={analyzer}>
+      <Task id="analyze" output={outputs.analyze} agent={analyzer}>
         {`Analyze the bug: ${ctx.input.description}`}
       </Task>
 
-      <Task id="fix" output="fix" agent={fixer}>
+      <Task id="fix" output={outputs.fix} agent={fixer}>
         {`Fix this issue: ${ctx.output("analyze", { nodeId: "analyze" }).summary}`}
       </Task>
     </Sequence>
@@ -103,16 +103,22 @@ If new nodes are unblocked, they become runnable.
 
 ### 2. Zod Schemas = Durable Tables
 
-Each output schema becomes a SQLite table.
+Each output schema becomes a SQLite table. Pass the schema directly to `<Task>` via the `outputs` object returned by `createSmithers`:
 
 ```ts
 const analyzeSchema = z.object({
   summary: z.string(),
   severity: z.enum(["low", "medium", "high"]),
 });
+
+const { Workflow, Task, smithers, outputs } = createSmithers({
+  analyze: analyzeSchema,
+});
+
+// outputs.analyze === analyzeSchema (the ZodObject, by reference)
 ```
 
-* Agent output must validate.
+* Agent output must validate against the schema.
 * If validation fails, the task retries (with error feedback).
 * Validated output is persisted.
 
@@ -156,8 +162,7 @@ If an agent returns malformed JSON:
 ```tsx
 <Task
   id="analyze"
-  output="analyze"
-  outputSchema={analyzeSchema}
+  output={outputs.analyze}
   agent={analyzer}
   retries={2}
 >
@@ -178,11 +183,11 @@ Each iteration is stored separately in the database.
   until={ctx.latest("review", "validate")?.approved}
   maxIterations={5}
 >
-  <Task id="implement" output="implement" agent={coder}>
+  <Task id="implement" output={outputs.implement} agent={coder}>
     Fix based on feedback
   </Task>
 
-  <Task id="validate" output="review" agent={reviewer}>
+  <Task id="validate" output={outputs.review} agent={reviewer}>
     Review the implementation
   </Task>
 </Ralph>
@@ -195,16 +200,16 @@ Each iteration is stored separately in the database.
 Because the workflow re-renders after each task, you can branch with normal JSX:
 
 ```tsx
-<Task id="assess" output="assess" agent={analyst}>
+<Task id="assess" output={outputs.assess} agent={analyst}>
   Assess complexity
 </Task>
 
 {ctx.output("assess", { nodeId: "assess" }).complexity === "high" ? (
-  <Task id="plan" output="plan" agent={architect}>
+  <Task id="plan" output={outputs.plan} agent={architect}>
     Plan implementation
   </Task>
 ) : (
-  <Task id="implement" output="code" agent={coder}>
+  <Task id="implement" output={outputs.code} agent={coder}>
     Quick fix
   </Task>
 )}
