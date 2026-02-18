@@ -7,6 +7,8 @@
       "dependencies": {
         "@ai-sdk/anthropic": "^3.0.36",
         "@mdx-js/esbuild": "^3.1.1",
+        "@types/react-dom": "^19.2.3",
+        "@types/react-reconciler": "^0.28.9",
         "ai": "^6.0.69",
         "diff": "^5.2.0",
         "drizzle-orm": "^0.45.1",
@@ -21,7 +23,6 @@
         "@types/bun": "latest",
         "@types/diff": "^5.2.0",
         "@types/react": "^19.2.10",
-        "@types/react-reconciler": "^0.28.9",
       },
       "peerDependencies": {
         "typescript": "^5",
@@ -120,6 +121,8 @@
     "@types/node": ["@types/node@25.2.0", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-DZ8VwRFUNzuqJ5khrvwMXHmvPe+zGayJhr2CDNiKB1WBE1ST8Djl00D0IC4vvNmHMdj6DlbYRIaFE7WHjlDl5w=="],
 
     "@types/react": ["@types/react@19.2.10", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-WPigyYuGhgZ/cTPRXB2EwUw+XvsRA3GqHlsP4qteqrnnjDrApbS7MxcGr/hke5iUoeB7E/gQtrs9I37zAJ0Vjw=="],
+
+    "@types/react-dom": ["@types/react-dom@19.2.3", "", { "peerDependencies": { "@types/react": "^19.2.0" } }, "sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ=="],
 
     "@types/react-reconciler": ["@types/react-reconciler@0.28.9", "", { "peerDependencies": { "@types/react": "*" } }, "sha512-HHM3nxyUZ3zAylX8ZEyrDNd2XZOnQ0D5XfunJF5FLQnZbHHYq4UWvW1QfelQNXv1ICNkwYhfxjwfnqivYB6bFg=="],
 
