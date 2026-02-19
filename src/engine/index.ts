@@ -36,6 +36,7 @@ import {
 import { runWithToolContext } from "../tools/context";
 import { EventBus } from "../events";
 import { getJjPointer } from "../vcs/jj";
+import { z } from "zod";
 import { eq, getTableName } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm/utils";
 import { dirname, resolve } from "node:path";
@@ -1015,6 +1016,17 @@ async function executeTask(
       };
       let validation = validateOutput(desc.outputTable as any, payloadWithKeys);
 
+      // If the Drizzle insert schema passed but we have a stricter Zod schema
+      // from the user, validate against that too. This catches cases where e.g.
+      // a JSON text column accepts any valid JSON but the Zod schema requires
+      // a specific shape (array vs string, enum values, etc).
+      if (validation.ok && desc.outputSchema) {
+        const zodResult = (desc.outputSchema as z.ZodType).safeParse(payload);
+        if (!zodResult.success) {
+          validation = { ok: false, error: zodResult.error };
+        }
+      }
+
       // Schema-validation retry: if the agent returned parseable JSON but it
       // doesn't match the Zod schema, re-prompt with the error and expected
       // shape up to 2 times before giving up.
@@ -1076,6 +1088,12 @@ async function executeTask(
             iteration: desc.iteration,
           };
           validation = validateOutput(desc.outputTable as any, retryPayload);
+          if (validation.ok && desc.outputSchema) {
+            const zodCheck = (desc.outputSchema as z.ZodType).safeParse(retryOutput);
+            if (!zodCheck.success) {
+              validation = { ok: false, error: zodCheck.error };
+            }
+          }
           if (validation.ok) {
             payload = validation.data;
           }
