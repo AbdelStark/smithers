@@ -869,7 +869,7 @@ async function executeTask(
             // Not valid JSON, try extraction
           }
 
-          // Helper to extract balanced JSON from text
+          // Helper to extract balanced JSON from text (first occurrence)
           function extractBalancedJson(str: string): string | null {
             const start = str.indexOf("{");
             if (start === -1) return null;
@@ -902,13 +902,27 @@ async function executeTask(
             return null;
           }
 
+          // Helper to extract the LAST balanced JSON object in text.
+          // Agents like Kimi emit all intermediate tool output before the final
+          // required JSON, so searching from the end finds the right object.
+          function extractLastBalancedJson(str: string): string | null {
+            let pos = str.lastIndexOf("{");
+            while (pos >= 0) {
+              const json = extractBalancedJson(str.slice(pos));
+              if (json !== null) return json;
+              pos = str.lastIndexOf("{", pos - 1);
+            }
+            return null;
+          }
+
           // Try to extract JSON from code fence (```json ... ```)
           if (output === undefined) {
-            // Check text first - look for code fence with balanced JSON
-            const codeFenceStart = text.search(/```(?:json)?\s*\{/);
-            if (codeFenceStart !== -1) {
+            // Find the LAST code fence — the required output is always at the end
+            const allFences = [...text.matchAll(/```(?:json)?\s*\{/g)];
+            const lastFence = allFences[allFences.length - 1];
+            if (lastFence?.index !== undefined) {
               const afterFence = text
-                .slice(codeFenceStart)
+                .slice(lastFence.index)
                 .replace(/```(?:json)?\s*/, "");
               const jsonStr = extractBalancedJson(afterFence);
               if (jsonStr) {
@@ -965,9 +979,10 @@ async function executeTask(
             }
           }
 
-          // Try text itself
+          // Try text itself — search from END so we get the required output JSON,
+          // not an earlier JSON object from intermediate tool output
           if (output === undefined) {
-            const jsonStr = extractBalancedJson(text);
+            const jsonStr = extractLastBalancedJson(text);
             if (jsonStr) {
               try {
                 const parsed = JSON.parse(jsonStr);
