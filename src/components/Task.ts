@@ -8,9 +8,8 @@ export type TaskProps<Row> = {
   key?: string;
   id: string;
   output: import("zod").ZodObject<any>;
-  agent?: AgentLike;
-  /** Fallback agent used on retry when the primary agent fails (e.g. rate-limited). */
-  fallbackAgent?: AgentLike;
+  /** Agent or array of agents [primary, fallback1, fallback2, ...]. Tries in order on retries. */
+  agent?: AgentLike | AgentLike[];
   skipIf?: boolean;
   needsApproval?: boolean;
   timeoutMs?: number;

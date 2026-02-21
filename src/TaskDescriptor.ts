@@ -17,9 +17,8 @@ export type TaskDescriptor = {
   retries: number;
   timeoutMs: number | null;
   continueOnFail: boolean;
-  agent?: AgentLike;
-  /** Fallback agent used on retry when the primary agent fails (e.g. rate-limited). */
-  fallbackAgent?: AgentLike;
+  /** Agent or array of agents [primary, fallback1, fallback2, ...]. Tries in order until one succeeds. */
+  agent?: AgentLike | AgentLike[];
   prompt?: string;
   staticPayload?: unknown;
   computeFn?: () => unknown | Promise<unknown>;

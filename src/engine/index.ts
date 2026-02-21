@@ -778,9 +778,9 @@ async function executeTask(
     }
 
     if (!payload) {
-      const effectiveAgent =
-        attemptNo > 1 && desc.fallbackAgent ? desc.fallbackAgent : desc.agent;
-      if (desc.agent) {
+      const agents = Array.isArray(desc.agent) ? desc.agent : (desc.agent ? [desc.agent] : []);
+      const effectiveAgent = agents[Math.min(attemptNo - 1, agents.length - 1)];
+      if (effectiveAgent) {
         // Use fallback agent on retry attempts when available
         const result = await runWithToolContext(
           {
