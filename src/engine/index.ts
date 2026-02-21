@@ -113,12 +113,15 @@ function findVcsRoot(startDir: string): { type: "git" | "jj"; root: string } | n
 }
 
 /**
- * Ensure a git worktree exists at `worktreePath`, creating it from `rootDir`
- * if necessary. Safe to call multiple times for the same path.
+ * Ensure a worktree exists at `worktreePath`, creating it from `rootDir`
+ * if necessary. When `branch` is provided, a jj bookmark or git branch is
+ * created/updated in the new worktree. Safe to call multiple times for the
+ * same path.
  */
-async function ensureGitWorktree(
+async function ensureWorktree(
   rootDir: string,
   worktreePath: string,
+  branch?: string,
 ): Promise<void> {
   if (createdWorktrees.has(worktreePath)) {
     if (existsSync(worktreePath)) return;
@@ -138,8 +141,9 @@ async function ensureGitWorktree(
     );
   }
 
+  // Best effort: refresh remote refs for git so origin/main can be used as a
+  // base when local main is absent.
   if (vcs.type === "git") {
-    // Try to fetch origin first so origin/main can resolve when available.
     await new Promise<void>((res) => {
       const child = nodeSpawn("git", ["fetch", "origin"], {
         cwd: vcs.root,
@@ -148,35 +152,75 @@ async function ensureGitWorktree(
       child.on("close", () => res());
       child.on("error", () => res());
     });
+  }
 
-    let created = false;
-    const failures: string[] = [];
-    for (const ref of ["origin/main", "HEAD"]) {
-      const result = await runGitCommand(vcs.root, [
-        "worktree",
-        "add",
-        worktreePath,
-        ref,
-      ]);
-      if (result.code === 0) {
-        created = true;
-        break;
-      }
-      failures.push(`${ref}: ${result.stderr || `exit ${result.code}`}`);
-    }
-    if (!created) {
-      throw new Error(
-        `Failed to create git worktree at ${worktreePath}. Tried origin/main and HEAD. ${failures.join(" | ")}`,
-      );
-    }
-  } else {
-    const { workspaceAdd } = await import("../vcs/jj");
+  if (vcs.type === "jj") {
+    const { workspaceAdd, runJj } = await import("../vcs/jj");
     const name = worktreePath.split("/").pop() ?? "worktree";
     const wsResult = await workspaceAdd(name, worktreePath, { cwd: vcs.root });
     if (!wsResult.success) {
       throw new Error(
         `Failed to create jj workspace at ${worktreePath}: ${wsResult.error}`,
       );
+    }
+    // Create a bookmark pointing at the new workspace's working copy
+    if (branch) {
+      const setRes = await runJj(["bookmark", "set", branch, "-r", "@"], {
+        cwd: worktreePath,
+      });
+      if (setRes.code !== 0) {
+        throw new Error(
+          `Failed to set jj bookmark ${branch} in ${worktreePath}: ${setRes.stderr || `exit ${setRes.code}`}`,
+        );
+      }
+    }
+  } else {
+    const baseRefs = ["main", "origin/main", "HEAD"] as const;
+    if (branch) {
+      // -B force-creates the branch (handles restarts gracefully)
+      let created = false;
+      const failures: string[] = [];
+      for (const ref of baseRefs) {
+        const result = await runGitCommand(vcs.root, [
+          "worktree",
+          "add",
+          "-B",
+          branch,
+          worktreePath,
+          ref,
+        ]);
+        if (result.code === 0) {
+          created = true;
+          break;
+        }
+        failures.push(`${ref}: ${result.stderr || `exit ${result.code}`}`);
+      }
+      if (!created) {
+        throw new Error(
+          `Failed to create git worktree at ${worktreePath} on branch ${branch}. Tried main, origin/main, and HEAD. ${failures.join(" | ")}`,
+        );
+      }
+    } else {
+      let created = false;
+      const failures: string[] = [];
+      for (const ref of baseRefs) {
+        const result = await runGitCommand(vcs.root, [
+          "worktree",
+          "add",
+          worktreePath,
+          ref,
+        ]);
+        if (result.code === 0) {
+          created = true;
+          break;
+        }
+        failures.push(`${ref}: ${result.stderr || `exit ${result.code}`}`);
+      }
+      if (!created) {
+        throw new Error(
+          `Failed to create git worktree at ${worktreePath}. Tried main, origin/main, and HEAD. ${failures.join(" | ")}`,
+        );
+      }
     }
   }
 
@@ -738,8 +782,9 @@ async function executeTask(
 
   // Ensure the worktree directory exists on disk before running the task.
   if (desc.worktreePath) {
-    await ensureGitWorktree(toolConfig.rootDir, desc.worktreePath);
+    await ensureWorktree(toolConfig.rootDir, desc.worktreePath, desc.worktreeBranch);
   }
+  const cacheAgent = Array.isArray(desc.agent) ? desc.agent[0] : desc.agent;
 
   try {
     if (signal?.aborted) {
@@ -747,9 +792,9 @@ async function executeTask(
     }
     if (cacheEnabled) {
       const schemaSig = schemaSignature(desc.outputTable as any);
-      const agentSig = desc.agent?.id ?? "agent";
-      const toolsSig = desc.agent?.tools
-        ? Object.keys(desc.agent.tools).sort().join(",")
+      const agentSig = cacheAgent?.id ?? "agent";
+      const toolsSig = cacheAgent?.tools
+        ? Object.keys(cacheAgent.tools).sort().join(",")
         : "";
       // Incorporate JJ state so workspace changes invalidate cache as documented.
       const jjBase = await getJjPointer(taskRoot);
@@ -1237,9 +1282,9 @@ async function executeTask(
         nodeId: desc.nodeId,
         outputTable: desc.outputTableName,
         schemaSig: schemaSignature(desc.outputTable as any),
-        agentSig: desc.agent?.id ?? "agent",
-        toolsSig: desc.agent?.tools
-          ? Object.keys(desc.agent.tools).sort().join(",")
+        agentSig: cacheAgent?.id ?? "agent",
+        toolsSig: cacheAgent?.tools
+          ? Object.keys(cacheAgent.tools).sort().join(",")
           : null,
         jjPointer: cacheJjBase,
         payloadJson: JSON.stringify(payload),

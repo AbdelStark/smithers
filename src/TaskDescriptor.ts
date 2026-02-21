@@ -7,6 +7,7 @@ export type TaskDescriptor = {
   ralphId?: string;
   worktreeId?: string;
   worktreePath?: string;
+  worktreeBranch?: string;
   outputTable: any | null;
   outputTableName: string;
   outputSchema?: import("zod").ZodObject<any>;

@@ -118,7 +118,7 @@ export function extractFromHost(
        * Stack of active <Worktree> contexts (outermost -> innermost).
        * The top of the stack controls the effective root override for tasks.
        */
-      worktreeStack: { id: string; path: string }[];
+      worktreeStack: { id: string; path: string; branch?: string }[];
     },
   ) {
     if (node.kind === "text") return;
@@ -179,7 +179,8 @@ export function extractFromHost(
       const normPath = isAbsolute(pathVal)
         ? resolvePath(pathVal)
         : resolvePath(base, pathVal);
-      nextWorktreeStack = [...worktreeStack, { id, path: normPath }];
+      const branch = node.rawProps?.branch ? String(node.rawProps.branch) : undefined;
+      nextWorktreeStack = [...worktreeStack, { id, path: normPath, branch }];
     }
     if (node.tag === "smithers:task") {
       const raw = node.rawProps || {};
@@ -233,6 +234,7 @@ export function extractFromHost(
         ralphId,
         worktreeId: topWorktree?.id,
         worktreePath: topWorktree?.path,
+        worktreeBranch: topWorktree?.branch,
         outputTable,
         outputTableName,
         outputSchema: outputRaw,
