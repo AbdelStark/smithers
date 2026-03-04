@@ -10,6 +10,11 @@ import { SmithersDb } from "../db/adapter";
 import { buildContext } from "../context";
 import type { SmithersWorkflow } from "../SmithersWorkflow";
 import { revertToAttempt } from "../revert";
+import {
+  resolveRunCommandExitCode,
+  shouldBlockResumeForRunningRun,
+  type InterruptSignal,
+} from "./run-command-utils";
 
 async function loadWorkflow(path: string): Promise<SmithersWorkflow<any>> {
   const abs = resolve(process.cwd(), path);
@@ -155,8 +160,6 @@ Run options:
       }
     };
     process.on("exit", closeSqlite);
-    process.on("SIGINT", () => { closeSqlite(); process.exit(130); });
-    process.on("SIGTERM", () => { closeSqlite(); process.exit(143); });
     const input = args.input ? parseJsonOrExit(args.input, "input") : {};
     const runId = args["run-id"];
     const resume = cmd === "resume" || Boolean(args.resume);
@@ -188,7 +191,7 @@ Run options:
         console.error(`Run not found: ${runId}`);
         process.exit(4);
       }
-      if (resume && existing?.status === "running" && !args.force) {
+      if (resume && shouldBlockResumeForRunningRun(existing?.status, Boolean(args.force))) {
         console.error(
           `Run is still marked running: ${runId}. Use --force to resume anyway.`,
         );
@@ -281,43 +284,51 @@ Run options:
       }
     };
     const abort = new AbortController();
+    let interruptedBySignal: InterruptSignal | null = null;
     let signalHandled = false;
-    const handleSignal = (signal: string) => {
+    const handleSignal = (signal: InterruptSignal) => {
       if (signalHandled) return;
       signalHandled = true;
+      interruptedBySignal = signal;
       process.stderr.write(`
 [smithers] received ${signal}, cancelling run...
 `);
       abort.abort();
     };
-    process.once("SIGINT", () => handleSignal("SIGINT"));
-    process.once("SIGTERM", () => handleSignal("SIGTERM"));
+    const onSigint = () => handleSignal("SIGINT");
+    const onSigterm = () => handleSignal("SIGTERM");
+    process.once("SIGINT", onSigint);
+    process.once("SIGTERM", onSigterm);
 
-    const result = await runWorkflow(workflow, {
-      input,
-      runId,
-      resume,
-      workflowPath: resolvedWorkflowPath,
-      maxConcurrency,
-      rootDir,
-      logDir,
-      allowNetwork: Boolean(args["allow-network"]),
-      maxOutputBytes,
-      toolTimeoutMs,
-      hot: Boolean(args["hot"]),
-      onProgress,
-      signal: abort.signal,
-    });
-    console.log(JSON.stringify(result, null, 2));
-    process.exit(
-      result.status === "finished"
-        ? 0
-        : result.status === "waiting-approval"
-          ? 3
-          : result.status === "cancelled"
-            ? 2
-            : 1,
-    );
+    try {
+      const result = await runWorkflow(workflow, {
+        input,
+        runId,
+        resume,
+        workflowPath: resolvedWorkflowPath,
+        maxConcurrency,
+        rootDir,
+        logDir,
+        allowNetwork: Boolean(args["allow-network"]),
+        maxOutputBytes,
+        toolTimeoutMs,
+        hot: Boolean(args["hot"]),
+        onProgress,
+        signal: abort.signal,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(
+        resolveRunCommandExitCode({
+          status: result.status,
+          interruptedBySignal,
+        }),
+      );
+    } finally {
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+      process.off("exit", closeSqlite);
+      closeSqlite();
+    }
   }
 
   if (cmd === "approve" || cmd === "deny") {

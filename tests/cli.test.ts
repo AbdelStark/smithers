@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { SmithersDb } from "../src/db/adapter";
 import { ensureSmithersTables } from "../src/db/ensure";
+import {
+  resolveRunCommandExitCode,
+  shouldBlockResumeForRunningRun,
+} from "../src/cli/run-command-utils";
 import { createTestDb } from "./helpers";
 import { ddl, schema } from "./schema";
 
@@ -76,5 +80,65 @@ describe("smithers list", () => {
     const runs = await adapter.listRuns(2);
     expect(runs.length).toBe(2);
     cleanup();
+  });
+});
+
+describe("run/resume CLI guards", () => {
+  test("blocks resume when run is still marked running and force is false", () => {
+    expect(shouldBlockResumeForRunningRun("running", false)).toBe(true);
+  });
+
+  test("allows resume when run is running but force is true", () => {
+    expect(shouldBlockResumeForRunningRun("running", true)).toBe(false);
+  });
+
+  test("does not block resume for non-running statuses", () => {
+    expect(shouldBlockResumeForRunningRun("failed", false)).toBe(false);
+    expect(shouldBlockResumeForRunningRun("finished", false)).toBe(false);
+    expect(shouldBlockResumeForRunningRun(undefined, false)).toBe(false);
+  });
+});
+
+describe("run command exit code mapping", () => {
+  test("maps workflow statuses when no signal interruption occurred", () => {
+    expect(
+      resolveRunCommandExitCode({
+        status: "finished",
+        interruptedBySignal: null,
+      }),
+    ).toBe(0);
+    expect(
+      resolveRunCommandExitCode({
+        status: "waiting-approval",
+        interruptedBySignal: null,
+      }),
+    ).toBe(3);
+    expect(
+      resolveRunCommandExitCode({
+        status: "cancelled",
+        interruptedBySignal: null,
+      }),
+    ).toBe(2);
+    expect(
+      resolveRunCommandExitCode({
+        status: "failed",
+        interruptedBySignal: null,
+      }),
+    ).toBe(1);
+  });
+
+  test("signal interruption overrides workflow status exit code", () => {
+    expect(
+      resolveRunCommandExitCode({
+        status: "cancelled",
+        interruptedBySignal: "SIGINT",
+      }),
+    ).toBe(130);
+    expect(
+      resolveRunCommandExitCode({
+        status: "failed",
+        interruptedBySignal: "SIGTERM",
+      }),
+    ).toBe(143);
   });
 });
